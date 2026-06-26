@@ -250,11 +250,13 @@ def configure_base() -> None:
         "think_model": ask("模型名称", current["think_model"]),
         "server_port": int(ask("本地服务端口", str(current["server_port"]))),
         "score_threshold": int(ask("最低匹配度阈值", str(current["score_threshold"]))),
-        "daily_greet_limit": int(ask("每日最多打招呼数量", str(current["daily_greet_limit"]))),
+        "session_greet_limit": int(ask("本次最多打招呼数量", str(current["session_greet_limit"]))),
         "automation_mode": ask("自动化模式 safe/manual/semi_auto/auto", current["automation_mode"]),
         "job_detail_max_chars": int(ask("职位描述传给模型的最大字数", str(current["job_detail_max_chars"]))),
         "log_verbosity": ask("日志模式 compact/normal/debug", str(current.get("log_verbosity", "compact"))),
+        "disable_model_thinking": ask_bool("是否关闭模型思考", bool(current.get("disable_model_thinking", True))),
         "show_model_reasoning": ask_bool("是否显示模型思考过程", bool(current.get("show_model_reasoning", False))),
+        "external_model_profile": ask("外部模型类型 generic/qwen/deepseek/doubao", str(current.get("external_model_profile", "generic"))),
         "blacklist_companies": ask_list("黑名单公司", list(current["blacklist_companies"])),
         "blacklist_keywords": ask_list("黑名单关键词", list(current["blacklist_keywords"])),
         "target_cities": ask_list("目标城市", list(current["target_cities"])),
@@ -287,10 +289,28 @@ def ensure_profile() -> None:
         runtime_state.emit("profile_ready", "继续使用已有简历画像", source="config")
         return
     profile = cache.generate_profile()
+    tags_path = cache.write_tags_file(profile.get("tags", []))
+    open_editor(tags_path, "打开编辑器确认岗位搜索标签", "tags_edit")
+    cache.save_tags(tags_path.read_text(encoding="utf-8"))
+    runtime_state.emit("tags_saved", f"岗位标签已确认: {'、'.join(cache.tags)}", source="config")
     detail_path = cache.write_user_detail_file(profile.get("user_detail", ""))
     open_editor(detail_path, "打开编辑器确认用户详情", "profile_edit")
     cache.save_user_detail(detail_path.read_text(encoding="utf-8"))
     runtime_state.emit("profile_saved", f"用户详情已确认，长度 {len(cache.user_detail)} 字", source="config")
+
+
+def edit_tags() -> None:
+    cache.load()
+    if not cache.tags:
+        if not cache.resume.strip():
+            print("[配置] 当前没有简历，无法生成岗位标签。")
+            return
+        profile = cache.generate_profile()
+        cache.write_tags_file(profile.get("tags", []))
+    tags_path = cache.write_tags_file()
+    open_editor(tags_path, "打开编辑器编辑岗位搜索标签", "tags_edit")
+    cache.save_tags(tags_path.read_text(encoding="utf-8"))
+    print(f"[配置] 岗位标签已保存: {'、'.join(cache.tags)}")
 
 
 def ensure_greeting() -> None:
@@ -350,9 +370,15 @@ def print_summary() -> None:
     else:
         print(f"- Ollama: {Config.ollama_host}")
     print(f"- 模型: {Config.think_model}")
+    if Config.model_provider == "openai_compatible":
+        print(f"- 外部模型类型: {Config.external_model_profile}")
     print(f"- 自动化模式: {Config.automation_mode}")
-    print(f"- 阈值/日上限: {Config.score_threshold} / {Config.daily_greet_limit}")
-    print(f"- 日志模式: {Config.log_verbosity} / 思考过程: {'显示' if Config.show_model_reasoning else '隐藏'}")
+    print(f"- 阈值/本次上限: {Config.score_threshold} / {Config.session_greet_limit}")
+    print(
+        f"- 日志模式: {Config.log_verbosity} / "
+        f"模型思考: {'关闭' if Config.disable_model_thinking else '允许'} / "
+        f"思考过程: {'显示' if Config.show_model_reasoning else '隐藏'}"
+    )
     print(f"- 简历: {'已保存' if cache.resume.strip() else '未准备'}")
     print(f"- 画像: {'已生成' if cache.cache_status()['profile_generated'] else '未生成'}")
     print(f"- 用户详情: {'已确认' if cache.user_detail.strip() else '未确认'}")
@@ -397,6 +423,8 @@ def show_status() -> None:
     detail = script.get("detail") or {}
     if detail.get("version"):
         print(f"- 脚本版本: {detail.get('version')} / 模式: {detail.get('automationMode') or '-'}")
+    if detail.get("sessionGreetLimit") is not None:
+        print(f"- 本轮打招呼: {detail.get('sessionGreetCount', 0)} / {detail.get('sessionGreetLimit')}")
     if not script.get("connected"):
         print("- 提示: 请打开或刷新 BOSS 搜索页，并确认油猴脚本已启用。")
     print(f"- 控制: {status['backend']['control']}")
@@ -501,6 +529,9 @@ def show_doctor() -> None:
         print(f"- Ollama 地址: {Config.ollama_host}")
     model_status = runtime_state.ollama_status()
     print(f"- 模型服务连接: {'可用' if model_status.get('available') else '不可用'}")
+    if Config.model_provider == "ollama" and model_status.get("available"):
+        installed = "已安装" if model_status.get("model_available") else "未在 Ollama 模型列表中"
+        print(f"- 当前模型: {Config.think_model} / {installed}")
     if not model_status.get("available") and model_status.get("error"):
         print(f"  错误: {model_status['error']}")
     script = runtime_state.script_snapshot()
@@ -531,6 +562,7 @@ def show_help() -> None:
   status        显示系统状态
   config        重新配置基础参数
   resume        重新上传/编辑简历
+  tags          编辑岗位搜索标签
   greeting      重新生成并确认打招呼用语
   start         开始或继续运行
   pause         暂停运行
@@ -558,6 +590,8 @@ def command_loop() -> None:
             configure_base()
         elif command == "resume":
             ensure_resume()
+        elif command == "tags":
+            edit_tags()
         elif command == "greeting":
             ensure_greeting()
         elif command in {"start", "resume-run"}:

@@ -18,16 +18,35 @@ DEFAULT_MODEL_OPTIONS = {
 }
 
 
+def get_value(value: Any, key: str, default: Any = "") -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def message_value(response: Any, key: str, default: Any = "") -> Any:
+    message = get_value(response, "message", None)
+    if message is not None:
+        found = get_value(message, key, None)
+        if found is not None:
+            return found
+    return get_value(response, key, default)
+
+
 def message_content(response: Any) -> str:
-    if hasattr(response, "message"):
-        message = response.message
-        if hasattr(message, "content"):
-            return message.content or ""
-        if isinstance(message, dict):
-            return message.get("content", "")
-    if isinstance(response, dict):
-        return response.get("message", {}).get("content", "")
+    return str(message_value(response, "content", "") or "")
+
+
+def message_thinking(response: Any) -> str:
+    for key in ("thinking", "reasoning_content", "reasoning", "reasoning_text"):
+        value = message_value(response, key, "")
+        if value:
+            return str(value)
     return ""
+
+
+def response_done(response: Any) -> bool:
+    return bool(get_value(response, "done", False))
 
 
 def make_ollama_client() -> Any:
@@ -42,6 +61,10 @@ def openai_chat_url() -> str:
     return Config.openai_api_base.rstrip("/") + "/chat/completions"
 
 
+def ollama_chat_url() -> str:
+    return Config.ollama_host.rstrip("/") + "/api/chat"
+
+
 def openai_payload_options(options: dict[str, Any] | None) -> dict[str, Any]:
     options = options or {}
     payload: dict[str, Any] = {}
@@ -52,6 +75,31 @@ def openai_payload_options(options: dict[str, Any] | None) -> dict[str, Any]:
     if "max_tokens" in options:
         payload["max_tokens"] = options["max_tokens"]
     return payload
+
+
+def should_disable_thinking(options: dict[str, Any] | None) -> bool:
+    options = options or {}
+    if "think" in options:
+        return not bool(options["think"])
+    if "disable_thinking" in options:
+        return bool(options["disable_thinking"])
+    return bool(Config.disable_model_thinking)
+
+
+def apply_openai_thinking_control(payload: dict[str, Any], disable_thinking: bool) -> bool:
+    if not disable_thinking:
+        return False
+    profile = str(getattr(Config, "external_model_profile", "generic"))
+    if profile == "qwen":
+        payload["enable_thinking"] = False
+        return True
+    if profile == "doubao":
+        payload["thinking"] = {"type": "disabled"}
+        return True
+    if profile == "deepseek":
+        payload["reasoning"] = {"enabled": False}
+        return True
+    return False
 
 
 def iter_openai_chat_chunks(
@@ -67,6 +115,7 @@ def iter_openai_chat_chunks(
         "stream": True,
     }
     payload.update(openai_payload_options(options))
+    thinking_control_applied = apply_openai_thinking_control(payload, should_disable_thinking(options))
     request = Request(
         openai_chat_url(),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -118,9 +167,95 @@ def iter_openai_chat_chunks(
                     yield content
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
+        if thinking_control_applied:
+            runtime_state.emit(
+                "model_thinking_control_retry",
+                "外部模型不支持当前思考控制参数，已移除后重试",
+                source="model",
+            )
+            retry_options = dict(options or {})
+            retry_options["disable_thinking"] = False
+            yield from iter_openai_chat_chunks(messages, model, retry_options)
+            return
         raise RuntimeError(f"外部模型请求失败: HTTP {exc.code} {body[:500]}") from exc
     except URLError as exc:
         raise RuntimeError(f"外部模型连接失败: {exc}") from exc
+
+
+def iter_ollama_http_raw_chunks(payload: dict[str, Any]) -> Any:
+    request = Request(
+        ollama_chat_url(),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=300) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Ollama 请求失败: HTTP {exc.code} {body[:500]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Ollama 连接失败: {exc}") from exc
+
+
+def iter_ollama_chat_chunks(
+    messages: list[dict[str, str]],
+    model: str,
+    options: dict[str, Any] | None = None,
+    format_schema: dict[str, Any] | None = None,
+) -> Any:
+    request_options = dict(options or DEFAULT_MODEL_OPTIONS)
+    think = request_options.pop("think", None)
+    disable_thinking = should_disable_thinking(options)
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "options": request_options,
+    }
+    kwargs["think"] = bool(think) if think is not None else not disable_thinking
+    if format_schema is not None:
+        kwargs["format"] = format_schema
+    def emit_chunks(payload: dict[str, Any]) -> Any:
+        reasoning_open = False
+        for chunk in iter_ollama_http_raw_chunks(payload):
+            thinking = message_thinking(chunk)
+            content = message_content(chunk)
+            if thinking:
+                if not reasoning_open:
+                    yield "<think>"
+                    reasoning_open = True
+                yield thinking
+            if content:
+                if reasoning_open:
+                    yield "</think>"
+                    reasoning_open = False
+                yield content
+            if response_done(chunk) and reasoning_open:
+                yield "</think>"
+                reasoning_open = False
+
+    try:
+        yield from emit_chunks(kwargs)
+    except RuntimeError as exc:
+        error_text = str(exc).lower()
+        if "think" not in kwargs or not ("think" in error_text or "unknown" in error_text or "400" in error_text):
+            raise
+        runtime_state.emit(
+            "model_thinking_control_retry",
+            "Ollama 不支持当前思考控制参数，已移除后重试",
+            source="model",
+        )
+        kwargs.pop("think", None)
+        yield from emit_chunks(kwargs)
 
 
 def iter_model_chunks(
@@ -132,16 +267,7 @@ def iter_model_chunks(
     if Config.model_provider == "openai_compatible":
         yield from iter_openai_chat_chunks(messages, model, options)
         return
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "stream": True,
-        "options": options or DEFAULT_MODEL_OPTIONS,
-    }
-    if format_schema is not None:
-        kwargs["format"] = format_schema
-    for chunk in make_ollama_client().chat(**kwargs):
-        yield message_content(chunk)
+    yield from iter_ollama_chat_chunks(messages, model, options, format_schema)
 
 
 class ModelChunkPrinter:
@@ -228,7 +354,7 @@ def stream_ollama_chat(
             item_type, payload = result_queue.get(timeout=1)
         except queue.Empty:
             if seconds >= next_wait_notice:
-                message = "等待模型响应" if not has_chunk else "模型仍在生成"
+                message = "等待模型首个响应" if not has_chunk else "模型正在思考/生成"
                 print(f"\n[模型] {message}... {seconds}s", flush=True)
                 next_wait_notice += 10
             continue

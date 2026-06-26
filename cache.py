@@ -27,12 +27,19 @@ class CacheManager:
 
     @property
     def tags(self) -> list[str]:
+        tags_path = Path(Config.tags_name)
+        if tags_path.exists():
+            tags = self.parse_tags(tags_path.read_text(encoding="utf-8"))
+            if tags:
+                return tags
         tags = self._profile.get("tags", [])
         return tags if isinstance(tags, list) else []
 
     @property
     def profile(self) -> dict[str, Any]:
-        return self._normalize_profile(self._profile)
+        profile = self._normalize_profile(self._profile)
+        profile["tags"] = self.tags
+        return profile
 
     def _normalize_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
         tags = profile.get("tags", [])
@@ -42,6 +49,16 @@ class CacheManager:
             "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
             "user_detail": str(profile.get("user_detail", "")).strip(),
         }
+
+    def parse_tags(self, content: str) -> list[str]:
+        items = content.replace("，", "\n").replace(",", "\n").splitlines()
+        tags: list[str] = []
+        for item in items:
+            for tag in str(item).split():
+                tag = tag.strip()
+                if tag and tag not in tags:
+                    tags.append(tag)
+        return tags
 
     def load(self) -> None:
         ensure_data_dirs()
@@ -85,6 +102,7 @@ class CacheManager:
                 "user_detail": generate_user_detail(self.resume),
             }
             self._save_profile(profile)
+            self.write_tags_file(profile["tags"])
             self.write_user_detail_file(profile["user_detail"])
             runtime_state.log("简历画像已生成")
             return self.profile
@@ -98,6 +116,25 @@ class CacheManager:
             encoding="utf-8",
         )
         self._profile = profile
+        self.write_tags_file(profile["tags"])
+
+    def write_tags_file(self, tags: list[str] | None = None) -> Path:
+        ensure_data_dirs()
+        path = Path(Config.tags_name)
+        values = tags if tags is not None else self.tags
+        path.write_text("\n".join(values).strip() + "\n", encoding="utf-8")
+        return path
+
+    def save_tags(self, content: str) -> dict[str, Any]:
+        tags = self.parse_tags(content)
+        if not tags:
+            raise ValueError("岗位标签不能为空")
+        profile = self.profile
+        profile["tags"] = tags
+        self._save_profile(profile)
+        self.write_tags_file(tags)
+        runtime_state.log("岗位标签已保存")
+        return self.profile
 
     def write_user_detail_file(self, content: str | None = None) -> Path:
         ensure_data_dirs()

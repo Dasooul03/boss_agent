@@ -155,7 +155,7 @@ def calculate_job_score(job_text: str, user_detail: str) -> tuple[dict[str, int]
             },
         ],
         model=Config.think_model,
-        options={"temperature": 0.6, "num_ctx": 10240},
+        options={"temperature": 0.2, "num_ctx": 4096, "num_predict": 256},
     )
     reply = extract_llm_reply(content)
     return _parse_score_breakdown(reply), reply

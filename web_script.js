@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job Seeker
 // @namespace    http://tampermonkey.net/
-// @version      2026.06.26.1
+// @version      2026.06.26.3
 // @description  Job Seeker 篡改猴插件
 // @author       Chatbot-Zhou
 // @match        https://www.zhipin.com/*
@@ -22,14 +22,14 @@
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.06-cli-autogreet.15',
+        scriptVersion: '2026.06-cli-autogreet.17',
         resumeIndex: 0, // 第几份简历，从 0 开始递增
         serverHost: 'http://127.0.0.1:33333', // 本地服务的主机地址
         thread: 60, // 分数阈值，低于这个就不发消息了
         timestampTimeout: 120000, // 页面跳转来源标记有效期，单位毫秒。
         jobInfoResponseTimeout: 90000, // 详情页回传职位信息的最长等待时间。
         onlyGreet: true, // 仅辅助打招呼，不自动扫描聊天页。
-        dailyGreetLimit: 50, // 每日打招呼上限，后端配置会覆盖这里。
+        sessionGreetLimit: 50, // 本次打招呼上限，后端配置会覆盖这里。
         actionDelayMs: 2500, // 页面动作之间的保守等待时间。
         automationMode: 'auto', // safe/manual/semi_auto/auto，后端配置会覆盖这里。
     };
@@ -43,8 +43,8 @@
         if (Number.isFinite(Number(config.score_threshold))) {
             OPTIONS.thread = Number(config.score_threshold);
         }
-        if (Number.isFinite(Number(config.daily_greet_limit))) {
-            OPTIONS.dailyGreetLimit = Number(config.daily_greet_limit);
+        if (Number.isFinite(Number(config.session_greet_limit))) {
+            OPTIONS.sessionGreetLimit = Number(config.session_greet_limit);
         }
         if (['safe', 'manual', 'semi_auto', 'auto'].includes(config.automation_mode)) {
             OPTIONS.automationMode = config.automation_mode;
@@ -362,21 +362,54 @@
             const link = direct || closest || child;
             return link ? this.normalUrl(link.getAttribute('href') || link.href) : '';
         },
-        todayKey(prefix) {
-            const date = new Date();
-            const y = date.getFullYear();
-            const m = String(date.getMonth() + 1).padStart(2, '0');
-            const d = String(date.getDate()).padStart(2, '0');
-            return `${prefix}_${y}${m}${d}`;
+        sessionStateKey: '__chatbot_zhou_greet_session',
+        getGreetSession() {
+            try {
+                const value = JSON.parse(localStorage.getItem(this.sessionStateKey) || '{}');
+                return {
+                    runId: String(value.runId || ''),
+                    count: Number(value.count || 0),
+                    startedAt: String(value.startedAt || ''),
+                    ended: Boolean(value.ended),
+                };
+            } catch (e) {
+                return { runId: '', count: 0, startedAt: '', ended: true };
+            }
         },
-        getDailyGreetCount() {
-            return Number(localStorage.getItem(this.todayKey('__chatbot_zhou_greet_count')) || 0);
+        saveGreetSession(session) {
+            const state = {
+                runId: String(session.runId || ''),
+                count: Math.max(0, Number(session.count || 0)),
+                startedAt: String(session.startedAt || new Date().toISOString()),
+                ended: Boolean(session.ended),
+            };
+            localStorage.setItem(this.sessionStateKey, JSON.stringify(state));
+            return state;
         },
-        increaseDailyGreetCount() {
-            const key = this.todayKey('__chatbot_zhou_greet_count');
-            const next = Number(localStorage.getItem(key) || 0) + 1;
-            localStorage.setItem(key, String(next));
-            return next;
+        startGreetSession(force = false) {
+            const current = this.getGreetSession();
+            if (!force && current.runId && !current.ended) {
+                return current;
+            }
+            return this.saveGreetSession({
+                runId: `run_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+                count: 0,
+                startedAt: new Date().toISOString(),
+                ended: false,
+            });
+        },
+        endGreetSession() {
+            const current = this.getGreetSession();
+            if (!current.runId) return current;
+            return this.saveGreetSession({ ...current, ended: true });
+        },
+        getSessionGreetCount() {
+            return this.getGreetSession().count;
+        },
+        increaseSessionGreetCount() {
+            const current = this.startGreetSession(false);
+            const next = this.saveGreetSession({ ...current, count: current.count + 1, ended: false });
+            return next.count;
         },
         detectInterruptionText(text) {
             const content = String(text || '').replace(/\s+/g, ' ');
@@ -962,6 +995,7 @@
         async __search(tagIdx) {
             // api
             const api = new Api();
+            let currentTagIdx = Math.max(0, Number(tagIdx) || 0);
             this.pause = true;
             const searchPageOpenedAt = new Date().getTime();
             const nowMs = () => (
@@ -986,13 +1020,15 @@
             let waitingForGreeting = false;
             let greetTimeoutId = null;
             let currentSearchAction = '等待启动';
+            let lastBackendControl = 'paused';
 
             const scriptHeartbeatDetail = () => ({
                 version: OPTIONS.scriptVersion,
                 automationMode: OPTIONS.automationMode,
                 threshold: OPTIONS.thread,
-                dailyGreetLimit: OPTIONS.dailyGreetLimit,
-                dailyGreetCount: tools.getDailyGreetCount(),
+                sessionGreetLimit: OPTIONS.sessionGreetLimit,
+                sessionGreetCount: tools.getSessionGreetCount(),
+                runId: tools.getGreetSession().runId,
             });
 
             const setSearchAction = (action) => {
@@ -1006,6 +1042,10 @@
 
             // 日志启动暂停事件
             const logger = new Logger(async () => {
+                const session = tools.getGreetSession();
+                if (!session.runId || session.ended) {
+                    beginGreetSession('开始新一轮');
+                }
                 await api.control('resume');
                 this.pause = false;
                 started ? loop() : main();
@@ -1035,6 +1075,51 @@
                 processedCount = 0;
                 totalProcessedMs = 0;
                 currentJobProgress = null;
+            };
+
+            const beginGreetSession = (reason = '') => {
+                const session = tools.startGreetSession(true);
+                resetProgress();
+                if (reason) {
+                    logger.add(`本轮打招呼计数已重置: ${reason}`);
+                }
+                return session;
+            };
+
+            const isSessionLimitReached = () => (
+                Number(OPTIONS.sessionGreetLimit) > 0
+                && tools.getSessionGreetCount() >= Number(OPTIONS.sessionGreetLimit)
+            );
+
+            const stopForSessionLimit = async (count = tools.getSessionGreetCount()) => {
+                const limit = Number(OPTIONS.sessionGreetLimit);
+                const message = `本次打招呼上限已达: ${count}/${limit}，自动化已停止`;
+                tools.endGreetSession();
+                this.pause = true;
+                logger.setPaused(true);
+                setSearchAction(message);
+                logger.add(message);
+                await api.event('session_limit_reached', message, 'script', 'info', {
+                    sessionGreetCount: count,
+                    limit,
+                    runId: tools.getGreetSession().runId,
+                });
+                await api.heartbeat('search', 'idle', message, scriptHeartbeatDetail());
+                try {
+                    await api.control('stop');
+                } catch (e) {
+                    await api.event('session_limit_stop_failed', `本次上限已达，但通知后端 stop 失败: ${e}`, 'script', 'error', {
+                        sessionGreetCount: count,
+                        limit,
+                    });
+                }
+                lastBackendControl = 'stopped';
+            };
+
+            const ensureSessionLimitAvailable = async () => {
+                if (!isSessionLimitReached()) return true;
+                await stopForSessionLimit();
+                return false;
             };
 
             const beginJobProgress = (href) => {
@@ -1067,6 +1152,8 @@
                     scriptHeartbeatDetail()
                 );
                 applyBackendConfig(res.config);
+                const previousControl = lastBackendControl;
+                lastBackendControl = res.control || lastBackendControl;
                 if (res.offline) {
                     noteBackendOffline('后端未连接：请确认 python main.py 正在运行，端口为 33333，并重新保存油猴脚本权限');
                     logger.setPaused(true);
@@ -1076,6 +1163,7 @@
                 noteBackendOnline();
                 if (res.should_stop || res.control === 'stopped') {
                     if (!this.pause) logger.add('CLI 已停止自动化');
+                    tools.endGreetSession();
                     logger.setPaused(true);
                     this.pause = true;
                     return false;
@@ -1087,6 +1175,10 @@
                     return false;
                 }
                 if (res.should_start || res.control === 'running') {
+                    const session = tools.getGreetSession();
+                    if (!session.runId || session.ended || previousControl === 'stopped') {
+                        beginGreetSession(previousControl === 'stopped' ? '停止后重新开始' : '开始新一轮');
+                    }
                     if (this.pause) logger.add('CLI 已允许开始/继续运行');
                     logger.setPaused(false);
                     this.pause = false;
@@ -1186,6 +1278,25 @@
                 }
             };
 
+            const scrollJobList = async () => {
+                const containers = SELECTORS.ZHIPIN.SEARCH.JOBLIST_CANDIDATES
+                    .map(selector => document.querySelector(selector))
+                    .filter(Boolean);
+                const scrollable = containers.find(el => el.scrollHeight > el.clientHeight);
+                if (scrollable) {
+                    scrollable.scrollTop = scrollable.scrollHeight;
+                    scrollable.dispatchEvent(new Event('scroll', { bubbles: true }));
+                }
+                const cards = document.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS_CANDIDATES.join(','));
+                const lastCard = cards[cards.length - 1];
+                if (lastCard && lastCard.scrollIntoView) {
+                    lastCard.scrollIntoView({ block: 'end' });
+                } else {
+                    window.scrollBy(0, window.innerHeight || 800);
+                }
+                await tools.asyncSleep(1500);
+            };
+
             // 获取职位链接
             const getJobHrefs = async () => {
                 try {
@@ -1225,29 +1336,68 @@
                 }
             };
 
-            // 下一页
+            // 加载下一批职位。BOSS 搜索页是滚动加载，不是真分页。
             const nextPage = async () => {
-                let hrefs;
-                [jobHrefs, hrefs] = await getJobHrefs();
-                if (jobHrefs.length === 0 && hrefs.length === elsLen) {
-                    logger.add('没有更多职位了');
-                    await api.event('job_list_empty', '没有更多职位了', 'script', 'info', { page });
-                    return false;
+                for (let attempt = 0; attempt <= 3; attempt++) {
+                    let hrefs;
+                    [jobHrefs, hrefs] = await getJobHrefs();
+                    elsLen = hrefs.length;
+                    if (jobHrefs.length > 0) {
+                        page++;
+                        logger.add(`开始浏览第 ${page} 批`);
+                        await scrollJobList();
+                        return true;
+                    }
+                    if (attempt < 3) {
+                        logger.add(`未发现新职位，滚动加载更多 (${attempt + 1}/3)`);
+                        await api.event(
+                            'job_list_scroll_retry',
+                            `未发现新职位，滚动加载更多 (${attempt + 1}/3)`,
+                            'script',
+                            'info',
+                            { page, knownCount: hrefs.length, keyword: this.tags[currentTagIdx] || '' }
+                        );
+                        await scrollJobList();
+                    }
                 }
-                elsLen = hrefs.length;
-                const cards = document.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS_CANDIDATES.join(','));
-                const lastCard = cards[cards.length - 1];
-                if (lastCard && lastCard.scrollIntoView) {
-                    lastCard.scrollIntoView();
-                } else {
-                    window.scrollTo(0, document.body.scrollHeight);
-                }
-                page++;
-                logger.add(`开始浏览第 ${page} 页`);
-                return true;
+                logger.add('当前关键词滚动 3 次仍无新职位');
+                await api.event('job_list_empty', '当前关键词滚动 3 次仍无新职位', 'script', 'info', {
+                    page,
+                    keyword: this.tags[currentTagIdx] || '',
+                    knownCount: elsLen,
+                });
+                return false;
             };
 
             document.nextPage = nextPage
+
+            const switchToNextKeyword = async (reason = '') => {
+                while (currentTagIdx + 1 < this.tags.length) {
+                    currentTagIdx += 1;
+                    jobHrefs = [];
+                    elsLen = 0;
+                    page = 0;
+                    lastJobListEventKey = '';
+                    const keyword = this.tags[currentTagIdx];
+                    const suffix = reason ? `（${reason}）` : '';
+                    logger.add(`切换到下一个搜索关键词: ${keyword}${suffix}`);
+                    await api.event('keyword_switched', `切换到下一个搜索关键词: ${keyword}`, 'script', 'info', {
+                        keyword,
+                        index: currentTagIdx,
+                        reason,
+                    });
+                    setSearchAction(`搜索关键词: ${keyword}`);
+                    await search(keyword);
+                    await tools.actionSleep(1500);
+                    if (await nextPage()) {
+                        return true;
+                    }
+                }
+                logger.add('所有岗位关键词已处理完毕');
+                await api.event('all_keywords_finished', '所有岗位关键词已处理完毕', 'script', 'info');
+                await api.heartbeat('search', 'idle', '所有岗位关键词已处理完毕');
+                return false;
+            };
 
             // 获取职位信息
             const getJobInfo = async (href) => {
@@ -1538,7 +1688,8 @@
                     }
                     // 告知结果
                     if (data.success) {
-                        logger.add(`打招呼成功`);
+                        const count = Number(data.sessionGreetCount || tools.getSessionGreetCount());
+                        logger.add(`打招呼成功，本轮计数 ${count}/${OPTIONS.sessionGreetLimit}`);
                     }
                     // 出错了
                     else {
@@ -1546,6 +1697,10 @@
                     }
                     finishGreetingWait();
                     finishJobProgress(data.success ? '打招呼成功' : '打招呼失败');
+                    if (data.success && isSessionLimitReached()) {
+                        await stopForSessionLimit(Number(data.sessionGreetCount || tools.getSessionGreetCount()));
+                        return;
+                    }
                     loop();
                 });
             };
@@ -1605,6 +1760,9 @@
                         logger.add('暂停中...');
                         return;
                     }
+                    if (!(await ensureSessionLimitAvailable())) {
+                        return;
+                    }
                     logger.divider();
                     // 判断职位链接是否为空
                     if (jobHrefs.length === 0) {
@@ -1613,13 +1771,11 @@
                             setTimeout(loop, 0);
                             return;
                         }
-                        if (OPTIONS.onlyGreet) {
-                            logger.add('职位列表已处理完毕');
-                            await api.heartbeat('search', 'idle', '职位列表已处理完毕');
+                        const hasNextKeyword = await switchToNextKeyword('当前关键词没有更多职位');
+                        if (hasNextKeyword) {
+                            setTimeout(loop, 0);
                             return;
                         }
-                        logger.add('职位列表已处理完毕');
-                        await api.heartbeat('search', 'idle', '职位列表已处理完毕');
                         return;
                     }
                     // 抽取第一个
@@ -1635,6 +1791,10 @@
                         finishJobProgress('暂停停止');
                         return;
                     }
+                    if (!(await ensureSessionLimitAvailable())) {
+                        finishJobProgress('本次上限停止');
+                        return;
+                    }
                     // 如果聊过，下一个
                     if (jobInfo.talked) {
                         const reason = jobInfo.talked_reason || '页面显示已沟通';
@@ -1646,6 +1806,10 @@
                         return;
                     }
                     // 否则发送消息计算匹配度
+                    if (!(await ensureSessionLimitAvailable())) {
+                        finishJobProgress('本次上限停止');
+                        return;
+                    }
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                     setSearchAction(`分析职位: ${jobInfo.title}`);
                     await api.event('job_analysis_started', `开始分析职位: ${jobInfo.title}`, 'script', 'info', { title: jobInfo.title, salary: jobInfo.salary });
@@ -1678,13 +1842,8 @@
                     // 如果分数达到阈值，打个招呼
                     if (analysis.recommendation === 'greet' && score >= OPTIONS.thread) {
                         jobInfo.score = score;
-                        const todayCount = tools.getDailyGreetCount();
-                        if (todayCount >= OPTIONS.dailyGreetLimit) {
-                            logger.add(`今日打招呼数量已达上限: ${todayCount}/${OPTIONS.dailyGreetLimit}`);
-                            await api.heartbeat('search', 'idle', '今日打招呼数量已达上限');
-                            await api.event('daily_limit_reached', `今日打招呼数量已达上限: ${todayCount}/${OPTIONS.dailyGreetLimit}`, 'script', 'info', { todayCount, limit: OPTIONS.dailyGreetLimit });
-                            this.pause = true;
-                            finishJobProgress('今日上限停止');
+                        if (!(await ensureSessionLimitAvailable())) {
+                            finishJobProgress('本次上限停止');
                             return;
                         }
                         if (OPTIONS.automationMode === 'safe') {
@@ -1704,6 +1863,10 @@
                         setSearchAction(`准备打招呼: ${jobInfo.title}`);
                         if (!(await syncControlFromBackend(`暂停检查: 准备打招呼 ${jobInfo.title}`))) {
                             finishJobProgress('暂停停止');
+                            return;
+                        }
+                        if (!(await ensureSessionLimitAvailable())) {
+                            finishJobProgress('本次上限停止');
                             return;
                         }
                         await sendGreetingFromSearch(jobInfo, href);
@@ -1740,6 +1903,9 @@
                     booting = true;
                     started = true;
                     resetProgress();
+                    if (!tools.getGreetSession().runId || tools.getGreetSession().ended) {
+                        beginGreetSession('开始新一轮');
+                    }
                     setSearchAction('程序启动，读取配置');
                     logger.add('--程序启动--');
                     await api.heartbeat('search', 'running', '程序启动');
@@ -1764,13 +1930,21 @@
                     }
                     logger.add('获取自我介绍成功: ' + this.introduce);
                     // 开始搜索
-                    setSearchAction(`准备搜索关键词: ${this.tags[tagIdx]}`);
-                    await search(this.tags[tagIdx]);
+                    if (currentTagIdx >= this.tags.length) {
+                        currentTagIdx = 0;
+                    }
+                    setSearchAction(`准备搜索关键词: ${this.tags[currentTagIdx]}`);
+                    await search(this.tags[currentTagIdx]);
                     await tools.actionSleep(1500);
                     const hasJobs = await nextPage();
                     if (!hasJobs) {
-                        logger.add('搜索后没有读取到职位列表');
-                        await api.heartbeat('search', 'error', '搜索后没有读取到职位列表');
+                        const hasNextKeyword = await switchToNextKeyword('搜索后没有读取到职位列表');
+                        if (hasNextKeyword) {
+                            loop();
+                        } else {
+                            logger.add('搜索后没有读取到职位列表');
+                            await api.heartbeat('search', 'idle', '所有岗位关键词均未读取到新职位');
+                        }
                         return;
                     }
                     // 开始循环
@@ -1789,6 +1963,7 @@
             const init = async () => {
                 const res = await api.heartbeat('search', 'idle', '等待 CLI start', scriptHeartbeatDetail());
                 applyBackendConfig(res.config);
+                lastBackendControl = res.control || lastBackendControl;
                 if (res.offline) {
                     noteBackendOffline('后端未连接：请先运行 python main.py，并确认油猴脚本允许连接 127.0.0.1');
                     return;
@@ -1798,12 +1973,15 @@
                     version: OPTIONS.scriptVersion,
                     serverHost: OPTIONS.serverHost,
                     threshold: OPTIONS.thread,
-                    dailyGreetLimit: OPTIONS.dailyGreetLimit,
-                    dailyGreetCount: tools.getDailyGreetCount(),
+                    sessionGreetLimit: OPTIONS.sessionGreetLimit,
+                    sessionGreetCount: tools.getSessionGreetCount(),
                     automationMode: OPTIONS.automationMode,
                 });
                 logger.add(`等待 CLI 输入 start 开始自动化，当前模式: ${OPTIONS.automationMode}`);
                 if (res.should_start || res.control === 'running') {
+                    if (!tools.getGreetSession().runId || tools.getGreetSession().ended) {
+                        beginGreetSession('开始新一轮');
+                    }
                     logger.setPaused(false);
                     this.pause = false;
                     main();
@@ -2020,11 +2198,17 @@
                         message: introduce,
                         context: greetContext,
                     }, greetContext, 'completed');
-                    const todayCount = tools.increaseDailyGreetCount();
+                    const sessionGreetCount = tools.increaseSessionGreetCount();
                     await pageApi.heartbeat('chat_greet', 'running', '打招呼成功');
-                    await pageApi.event('greet_finished', `打招呼消息已发送，今日计数 ${todayCount}`, 'script', 'info', { todayCount });
+                    await pageApi.event(
+                        'greet_finished',
+                        `打招呼消息已发送，本轮计数 ${sessionGreetCount}`,
+                        'script',
+                        'info',
+                        { sessionGreetCount, runId: tools.getGreetSession().runId }
+                    );
                     heartbeatActive = false;
-                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true }).catch(async (sendError) => {
+                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true, sessionGreetCount }).catch(async (sendError) => {
                         await pageApi.event('broadcast_send_failed', `打招呼结果回传失败: ${sendError}`, 'script', 'error');
                     }).finally(() => {
                         this.broadcast.destroy();

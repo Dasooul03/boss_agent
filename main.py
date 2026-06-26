@@ -355,6 +355,7 @@ async def history(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, 
 
 @app.get("/tags", summary="获取职位标签")
 async def get_tags():
+    cache.load()
     return {"tags": cache.tags}
 
 

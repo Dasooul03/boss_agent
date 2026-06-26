@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import deque
 from datetime import datetime, timezone
 from queue import Queue
@@ -164,14 +165,22 @@ class RuntimeState:
         try:
             with urlopen(url, timeout=1.5) as response:
                 data = response.read().decode("utf-8", errors="ignore")
+            payload = json.loads(data)
+            models = [
+                item.get("name") or item.get("model")
+                for item in payload.get("models", [])
+                if isinstance(item, dict)
+            ]
             return {
                 "available": True,
                 "provider": Config.model_provider,
                 "host": Config.ollama_host,
                 "model": Config.think_model,
+                "models": models,
+                "model_available": Config.think_model in models,
                 "raw": data[:500],
             }
-        except (URLError, TimeoutError, OSError) as exc:
+        except (json.JSONDecodeError, URLError, TimeoutError, OSError) as exc:
             return {
                 "available": False,
                 "provider": Config.model_provider,
@@ -226,6 +235,9 @@ class RuntimeState:
                 "model": Config.think_model,
                 "openai_api_base": Config.openai_api_base if Config.model_provider == "openai_compatible" else "",
                 "openai_api_key_configured": bool(str(Config.openai_api_key).strip()),
+                "disable_model_thinking": bool(Config.disable_model_thinking),
+                "show_model_reasoning": bool(Config.show_model_reasoning),
+                "external_model_profile": Config.external_model_profile if Config.model_provider == "openai_compatible" else "",
             },
             "resume": resume_status,
             "cache": cache_status,
