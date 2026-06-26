@@ -34,9 +34,9 @@ pip install -r requirements.txt
 ollama pull qwen3:4b
 ```
 
-也可以在 CLI 配置向导中选择 `openai_compatible`，接入兼容 OpenAI Chat Completions 的外部模型服务。需要填写：
+也可以在 CLI 配置向导中选择 `openai`，接入 OpenAI Chat Completions 接口。需要填写：
 
-- API Base，例如 `https://api.openai.com/v1`
+- OpenAI API 地址，例如 `https://api.openai.com/v1`
 - API Key
 - 模型名称
 
@@ -52,7 +52,7 @@ python main.py
 
 初始化流程：
 
-1. 配置模型来源、Ollama 或 OpenAI-compatible API、模型名、端口、阈值、本次打招呼上限、黑名单和自动化模式。
+1. 配置模型来源、Ollama 或 OpenAI、模型名、端口、阈值和本次打招呼上限。
 2. 输入 PDF 简历路径。
 3. 系统提取 PDF 文本并生成 `data/resume/resume.md`。
 4. 系统打开编辑器，用户确认并保存简历内容。
@@ -88,7 +88,7 @@ CLI 会展示：
 - 服务启动、配置加载、初始化检查
 - 脚本心跳、页面类型、当前动作
 - 搜索关键词、职位列表滚动加载、关键词切换、职位详情
-- 历史去重、黑名单命中、基于用户画像的三项评分和系统加权匹配度
+- 历史去重、基于用户画像的三项评分和系统加权匹配度
 - 模型调用状态；默认隐藏模型返回的 `<think>` 思考内容
 - 学历专业评分、技术栈评分、项目经验评分、加权匹配度、推荐动作和跳过原因
 - 打招呼、官方简历附件请求和发送结果
@@ -100,12 +100,9 @@ CLI 会展示：
 
 注意：CLI 展示的是 Job Seeker 调用本地 Ollama 模型实际返回的内容和系统决策依据，不展示本助手内部推理。
 
-## 自动化模式
+## 自动行为边界
 
-- 安全模式：只分析并记录建议，不发送文字和附件。
-- 手动模式：打招呼进入 `actions` 确认队列，不自动文字回复。
-- 半自动模式：自动打招呼，不自动文字回复。
-- 自动模式：自动打招呼，不自动文字回复。
+系统统一使用自动模式：岗位达到阈值后自动打招呼，不自动文字回复，不自动发送联系方式或作品集。
 
 聊天页不做自动文字沟通；仅当 BOSS 官方卡片明确索要附件简历并且卡片内存在“同意”按钮时，脚本自动点击同意并记录历史。
 
@@ -170,12 +167,12 @@ http://127.0.0.1:33333
 
 配置文件位于 `data/` 目录，首次运行后自动生成。也可以手动创建或修改：
 
-| 文件 | 说明 | 修改方式 |
-|------|------|----------|
-| `data/config.json` | 主配置文件 | 参考 `config.example.json`，修改后运行 `config` 命令生效 |
-| `data/resume/resume.md` | 简历内容 | 直接编辑，或运行 `resume` 命令重新上传 |
-| `data/cache/user_detail.md` | 用户画像详情 | 参考 `user_detail.example.md` 格式，直接编辑 |
-| `data/cache/greeting.json` | 打招呼话术 | 参考 `greeting.example.json` 格式，直接编辑 |
+| 文件                        | 说明         | 修改方式                                                 |
+| --------------------------- | ------------ | -------------------------------------------------------- |
+| `data/config.json`          | 主配置文件   | 参考 `config.example.json`，修改后运行 `config` 命令生效 |
+| `data/resume/resume.md`     | 简历内容     | 直接编辑，或运行 `resume` 命令重新上传                   |
+| `data/cache/user_detail.md` | 用户画像详情 | 参考 `user_detail.example.md` 格式，直接编辑             |
+| `data/cache/greeting.json`  | 打招呼话术   | 参考 `greeting.example.json` 格式，直接编辑              |
 
 预设配置存在时系统直接工作，可通过 `config`/`resume`/`greeting` 等命令按需调整。
 

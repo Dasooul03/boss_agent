@@ -159,7 +159,7 @@ class RuntimeState:
         }
 
     def ollama_status(self) -> dict[str, Any]:
-        if Config.model_provider == "openai_compatible":
+        if Config.model_provider == "openai":
             return self.external_model_status()
         url = Config.ollama_host.rstrip("/") + "/api/tags"
         try:
@@ -198,7 +198,7 @@ class RuntimeState:
             "model": Config.think_model,
         }
         if not result["api_key_configured"]:
-            result["error"] = "外部模型 API Key 未配置"
+            result["error"] = "OpenAI API Key 未配置"
             return result
         url = Config.openai_api_base.rstrip("/") + "/models"
         request = Request(
@@ -233,11 +233,11 @@ class RuntimeState:
             "models": {
                 "provider": Config.model_provider,
                 "model": Config.think_model,
-                "openai_api_base": Config.openai_api_base if Config.model_provider == "openai_compatible" else "",
+                "openai_api_base": Config.openai_api_base if Config.model_provider == "openai" else "",
                 "openai_api_key_configured": bool(str(Config.openai_api_key).strip()),
                 "disable_model_thinking": bool(Config.disable_model_thinking),
                 "show_model_reasoning": bool(Config.show_model_reasoning),
-                "external_model_profile": Config.external_model_profile if Config.model_provider == "openai_compatible" else "",
+                "external_model_profile": Config.external_model_profile if Config.model_provider == "openai" else "",
             },
             "resume": resume_status,
             "cache": cache_status,

@@ -31,7 +31,6 @@
         onlyGreet: true, // 仅辅助打招呼，不自动扫描聊天页。
         sessionGreetLimit: 50, // 本次打招呼上限，后端配置会覆盖这里。
         actionDelayMs: 2500, // 页面动作之间的保守等待时间。
-        automationMode: 'auto', // safe/manual/semi_auto/auto，后端配置会覆盖这里。
     };
 
     let backendOfflineNotified = false;
@@ -45,9 +44,6 @@
         }
         if (Number.isFinite(Number(config.session_greet_limit))) {
             OPTIONS.sessionGreetLimit = Number(config.session_greet_limit);
-        }
-        if (['safe', 'manual', 'semi_auto', 'auto'].includes(config.automation_mode)) {
-            OPTIONS.automationMode = config.automation_mode;
         }
     }
 
@@ -1024,7 +1020,6 @@
 
             const scriptHeartbeatDetail = () => ({
                 version: OPTIONS.scriptVersion,
-                automationMode: OPTIONS.automationMode,
                 threshold: OPTIONS.thread,
                 sessionGreetLimit: OPTIONS.sessionGreetLimit,
                 sessionGreetCount: tools.getSessionGreetCount(),
@@ -1566,7 +1561,6 @@
 
             const buildGreetingPayload = (jobInfo, analysis, href, reason = '') => ({
                 reason,
-                mode: OPTIONS.automationMode,
                 score: analysis.total_score,
                 threshold: OPTIONS.thread,
                 recommendation: analysis.recommendation || '',
@@ -1581,22 +1575,6 @@
                 },
             });
 
-            const requestGreetingApproval = async (jobInfo, analysis, href) => {
-                const action = await api.createAction(
-                    'greet_confirm',
-                    buildGreetingPayload(jobInfo, analysis, href, '手动模式要求确认打招呼'),
-                    jobInfo
-                );
-                logger.add(`等待 CLI 确认打招呼动作 #${action.id}`);
-                await api.heartbeat('search', 'waiting_confirm', `等待确认打招呼: ${jobInfo.title}`);
-                const approved = await api.waitActionApproved(action.id);
-                if (!approved) {
-                    logger.add(`CLI 未批准打招呼: ${jobInfo.title}`);
-                    await api.event('greet_rejected', `CLI 未批准打招呼: ${jobInfo.title}`, 'script', 'info', { title: jobInfo.title, actionId: action.id });
-                }
-                return approved;
-            };
-
             const recordGreetingSuggestion = async (jobInfo, analysis, href, reason) => {
                 await api.createAction(
                     'greet_suggestion',
@@ -1605,7 +1583,7 @@
                     'completed'
                 );
                 logger.add(`${reason}: ${jobInfo.title}`);
-                await api.event('greet_suggestion', `${reason}: ${jobInfo.title}`, 'script', 'info', { title: jobInfo.title, score: analysis.total_score, mode: OPTIONS.automationMode });
+                await api.event('greet_suggestion', `${reason}: ${jobInfo.title}`, 'script', 'info', { title: jobInfo.title, score: analysis.total_score });
             };
 
             const sendGreetingFromSearch = async (jobInfo, href) => {
@@ -1846,20 +1824,6 @@
                             finishJobProgress('本次上限停止');
                             return;
                         }
-                        if (OPTIONS.automationMode === 'safe') {
-                            await recordGreetingSuggestion(jobInfo, analysis, href, '安全模式只记录打招呼建议，不发送');
-                            finishJobProgress('安全模式记录');
-                            setTimeout(loop, 0);
-                            return;
-                        }
-                        if (OPTIONS.automationMode === 'manual') {
-                            const approved = await requestGreetingApproval(jobInfo, analysis, href);
-                            if (!approved) {
-                                finishJobProgress('未批准打招呼');
-                                setTimeout(loop, 0);
-                                return;
-                            }
-                        }
                         setSearchAction(`准备打招呼: ${jobInfo.title}`);
                         if (!(await syncControlFromBackend(`暂停检查: 准备打招呼 ${jobInfo.title}`))) {
                             finishJobProgress('暂停停止');
@@ -1875,8 +1839,6 @@
                     else {
                         if (analysis.recommendation === 'wait_for_confirm') {
                             await recordGreetingSuggestion(jobInfo, analysis, href, analysis.match_reason || '模型建议人工确认，不自动打招呼');
-                        } else if (OPTIONS.automationMode === 'safe') {
-                            await recordGreetingSuggestion(jobInfo, analysis, href, '安全模式记录低分职位，不发送');
                         } else {
                             await api.event('decision_skip', `跳过职位: ${jobInfo.title} / ${score}`, 'script', 'info', { title: jobInfo.title, score, recommendation: analysis.recommendation, reason: analysis.match_reason || analysis.blocked_reason || '' });
                         }
@@ -1975,9 +1937,8 @@
                     threshold: OPTIONS.thread,
                     sessionGreetLimit: OPTIONS.sessionGreetLimit,
                     sessionGreetCount: tools.getSessionGreetCount(),
-                    automationMode: OPTIONS.automationMode,
                 });
-                logger.add(`等待 CLI 输入 start 开始自动化，当前模式: ${OPTIONS.automationMode}`);
+                logger.add('等待 CLI 输入 start 开始自动化');
                 if (res.should_start || res.control === 'running') {
                     if (!tools.getGreetSession().runId || tools.getGreetSession().ended) {
                         beginGreetSession('开始新一轮');
@@ -2307,14 +2268,6 @@
 
             // 发送简历
             const sendResume = async (context = {}, requestCard = null) => {
-                if (OPTIONS.automationMode === 'safe') {
-                    await pageApi.createAction('send_resume_suggestion', {
-                        reason: '安全模式禁止发送附件',
-                        context,
-                    }, context, 'completed');
-                    status('安全模式已记录简历发送建议，不发送');
-                    return;
-                }
                 await pageApi.event('attachment_auto_send_started', 'BOSS 官方卡片请求简历，自动发送附件简历', 'script', 'info', context);
                 if (requestCard) {
                     const agreeButton = Array.from(requestCard.querySelectorAll('button, a, span, div'))

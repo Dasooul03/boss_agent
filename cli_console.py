@@ -38,7 +38,6 @@ PREFIX = {
 
 CLI_CONFIRM_ACTIONS = {
     "send_resume",
-    "greet_confirm",
 }
 
 WEB_SCRIPT_PATH = Path(__file__).resolve().parent / "web_script.js"
@@ -223,9 +222,9 @@ def ask_list(prompt: str, current: list[str]) -> list[str]:
 
 
 def ask_api_key(current: str) -> str:
-    if current and not ask_bool("是否更新外部模型 API Key", False):
+    if current and not ask_bool("是否更新 OpenAI API Key", False):
         return current
-    return getpass("外部模型 API Key: ").strip()
+    return getpass("OpenAI API Key: ").strip()
 
 
 def open_editor(path: Path, message: str = "打开编辑器确认文件", event_type: str = "file_edit") -> None:
@@ -238,29 +237,26 @@ def open_editor(path: Path, message: str = "打开编辑器确认文件", event_
 def configure_base() -> None:
     current = Config.as_dict()
     runtime_state.emit("config_start", "进入配置向导", source="config")
-    model_provider = ask("模型来源 ollama/openai_compatible", current["model_provider"]).strip()
-    if model_provider not in {"ollama", "openai_compatible"}:
+    model_provider = ask("模型来源 ollama/openai", current["model_provider"]).strip()
+    if model_provider == "openai_compatible":
+        model_provider = "openai"
+    if model_provider not in {"ollama", "openai"}:
         print("模型来源无效，已使用 ollama。")
         model_provider = "ollama"
     updates = {
         "model_provider": model_provider,
         "ollama_host": ask("Ollama 地址", current["ollama_host"]),
-        "openai_api_base": ask("OpenAI-compatible API Base", current["openai_api_base"]),
-        "openai_api_key": ask_api_key(str(current.get("openai_api_key", ""))) if model_provider == "openai_compatible" else current.get("openai_api_key", ""),
+        "openai_api_base": ask("OpenAI API 地址", current["openai_api_base"]),
+        "openai_api_key": ask_api_key(str(current.get("openai_api_key", ""))) if model_provider == "openai" else current.get("openai_api_key", ""),
         "think_model": ask("模型名称", current["think_model"]),
         "server_port": int(ask("本地服务端口", str(current["server_port"]))),
         "score_threshold": int(ask("最低匹配度阈值", str(current["score_threshold"]))),
         "session_greet_limit": int(ask("本次最多打招呼数量", str(current["session_greet_limit"]))),
-        "automation_mode": ask("自动化模式 safe/manual/semi_auto/auto", current["automation_mode"]),
         "job_detail_max_chars": int(ask("职位描述传给模型的最大字数", str(current["job_detail_max_chars"]))),
         "log_verbosity": ask("日志模式 compact/normal/debug", str(current.get("log_verbosity", "compact"))),
         "disable_model_thinking": ask_bool("是否关闭模型思考", bool(current.get("disable_model_thinking", True))),
         "show_model_reasoning": ask_bool("是否显示模型思考过程", bool(current.get("show_model_reasoning", False))),
-        "external_model_profile": ask("外部模型类型 generic/qwen/deepseek/doubao", str(current.get("external_model_profile", "generic"))),
-        "blacklist_companies": ask_list("黑名单公司", list(current["blacklist_companies"])),
-        "blacklist_keywords": ask_list("黑名单关键词", list(current["blacklist_keywords"])),
-        "target_cities": ask_list("目标城市", list(current["target_cities"])),
-        "job_keywords": ask_list("目标岗位关键词", list(current["job_keywords"])),
+        "external_model_profile": ask("OpenAI 模型类型 generic/qwen/deepseek/doubao", str(current.get("external_model_profile", "generic"))),
     }
     Config.save(updates)
     runtime_state.emit("config_saved", "配置已保存", source="config", detail=Config.public_dict())
@@ -365,14 +361,13 @@ def print_summary() -> None:
     print("\n[配置] 当前运行摘要")
     print(f"- 服务端口: {Config.server_port}")
     print(f"- 模型来源: {Config.model_provider}")
-    if Config.model_provider == "openai_compatible":
-        print(f"- 外部 API: {Config.openai_api_base} / Key: {'已配置' if Config.openai_api_key else '未配置'}")
+    if Config.model_provider == "openai":
+        print(f"- OpenAI: {Config.openai_api_base} / Key: {'已配置' if Config.openai_api_key else '未配置'}")
     else:
         print(f"- Ollama: {Config.ollama_host}")
     print(f"- 模型: {Config.think_model}")
-    if Config.model_provider == "openai_compatible":
-        print(f"- 外部模型类型: {Config.external_model_profile}")
-    print(f"- 自动化模式: {Config.automation_mode}")
+    if Config.model_provider == "openai":
+        print(f"- OpenAI 模型类型: {Config.external_model_profile}")
     print(f"- 阈值/本次上限: {Config.score_threshold} / {Config.session_greet_limit}")
     print(
         f"- 日志模式: {Config.log_verbosity} / "
@@ -422,7 +417,7 @@ def show_status() -> None:
         print(f"- 脚本心跳: {script.get('heartbeat_age_seconds')} 秒前")
     detail = script.get("detail") or {}
     if detail.get("version"):
-        print(f"- 脚本版本: {detail.get('version')} / 模式: {detail.get('automationMode') or '-'}")
+        print(f"- 脚本版本: {detail.get('version')}")
     if detail.get("sessionGreetLimit") is not None:
         print(f"- 本轮打招呼: {detail.get('sessionGreetCount', 0)} / {detail.get('sessionGreetLimit')}")
     if not script.get("connected"):
@@ -522,8 +517,8 @@ def show_doctor() -> None:
         print(f"- Python 依赖 {package}: {'已安装' if found else '缺失'}")
     print(f"- API 地址: http://{Config.server_host}:{Config.server_port}")
     print(f"- 模型来源: {Config.model_provider}")
-    if Config.model_provider == "openai_compatible":
-        print(f"- 外部 API: {Config.openai_api_base}")
+    if Config.model_provider == "openai":
+        print(f"- OpenAI: {Config.openai_api_base}")
         print(f"- API Key: {'已配置' if Config.openai_api_key else '未配置'}")
     else:
         print(f"- Ollama 地址: {Config.ollama_host}")
@@ -542,7 +537,7 @@ def show_doctor() -> None:
         print(f"  最近心跳: {script.get('heartbeat_age_seconds')} 秒前")
     detail = script.get("detail") or {}
     if detail.get("version"):
-        print(f"  版本/模式/阈值: {detail.get('version')} / {detail.get('automationMode') or '-'} / {detail.get('threshold') or '-'}")
+        print(f"  版本/阈值: {detail.get('version')} / {detail.get('threshold') or '-'}")
     if script.get("stale"):
         print("- 建议: 刷新 BOSS 搜索页，等待 CLI 出现新的脚本心跳后再输入 start。")
     elif not script.get("connected"):

@@ -31,17 +31,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "score_threshold": 70,
     "session_greet_limit": 50,
     "max_contacts_per_company": 1,
-    "automation_mode": "auto",
     "skip_contacted_companies": True,
     "job_detail_max_chars": 1600,
     "log_verbosity": "compact",
     "disable_model_thinking": True,
     "show_model_reasoning": False,
     "external_model_profile": "generic",
-    "blacklist_companies": [],
-    "blacklist_keywords": [],
-    "target_cities": [],
-    "job_keywords": [],
 }
 
 
@@ -93,17 +88,12 @@ class Config:
     score_threshold = DEFAULT_CONFIG["score_threshold"]
     session_greet_limit = DEFAULT_CONFIG["session_greet_limit"]
     max_contacts_per_company = DEFAULT_CONFIG["max_contacts_per_company"]
-    automation_mode = DEFAULT_CONFIG["automation_mode"]
     skip_contacted_companies = DEFAULT_CONFIG["skip_contacted_companies"]
     job_detail_max_chars = DEFAULT_CONFIG["job_detail_max_chars"]
     log_verbosity = DEFAULT_CONFIG["log_verbosity"]
     disable_model_thinking = DEFAULT_CONFIG["disable_model_thinking"]
     show_model_reasoning = DEFAULT_CONFIG["show_model_reasoning"]
     external_model_profile = DEFAULT_CONFIG["external_model_profile"]
-    blacklist_companies = DEFAULT_CONFIG["blacklist_companies"]
-    blacklist_keywords = DEFAULT_CONFIG["blacklist_keywords"]
-    target_cities = DEFAULT_CONFIG["target_cities"]
-    job_keywords = DEFAULT_CONFIG["job_keywords"]
 
     @classmethod
     def load(cls) -> dict[str, Any]:
@@ -116,6 +106,9 @@ class Config:
                 if isinstance(saved, dict):
                     if not saved.get("think_model") and saved.get("chat_model"):
                         saved["think_model"] = saved.get("chat_model")
+                        should_rewrite = True
+                    if saved.get("model_provider") == "openai_compatible":
+                        saved["model_provider"] = "openai"
                         should_rewrite = True
                     if "daily_greet_limit" in saved and "session_greet_limit" not in saved:
                         saved["session_greet_limit"] = saved.get("daily_greet_limit")
@@ -135,7 +128,9 @@ class Config:
     @classmethod
     def apply(cls, data: dict[str, Any]) -> None:
         data = dict(data)
-        if data.get("model_provider") not in {"ollama", "openai_compatible"}:
+        if data.get("model_provider") == "openai_compatible":
+            data["model_provider"] = "openai"
+        if data.get("model_provider") not in {"ollama", "openai"}:
             data["model_provider"] = DEFAULT_CONFIG["model_provider"]
         if data.get("log_verbosity") not in {"compact", "normal", "debug"}:
             data["log_verbosity"] = DEFAULT_CONFIG["log_verbosity"]

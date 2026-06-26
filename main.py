@@ -272,7 +272,7 @@ async def jobs_analyze(payload: JobAnalyzeRequest):
     cache.load()
     job = payload.model_dump()
     existing_job = database.get_job(job.get("url", ""))
-    blocked_reason = blocked_by_history(job, existing_job) or blocked_by_config(job)
+    blocked_reason = blocked_by_history(job, existing_job)
     if blocked_reason:
         analysis = {
             "total_score": 0,
@@ -363,25 +363,6 @@ async def get_tags():
 async def get_introduce():
     greeting = greeting_service.get_greeting()
     return {"introduce": greeting["active_content"] if greeting.get("confirmed") else ""}
-
-
-def blocked_by_config(job: dict[str, Any]) -> str:
-    company = job.get("company", "")
-    title = job.get("title", "")
-    detail = job.get("detail", "")
-    city = job.get("city", "")
-    text = f"{company}\n{title}\n{detail}\n{city}"
-    for blocked_company in Config.blacklist_companies:
-        if blocked_company and blocked_company in company:
-            return f"公司命中黑名单: {blocked_company}"
-    for keyword in Config.blacklist_keywords:
-        if keyword and keyword in text:
-            return f"职位命中黑名单关键词: {keyword}"
-    if Config.target_cities and city and not any(target in city for target in Config.target_cities):
-        return "城市不在目标城市范围"
-    if Config.job_keywords and not any(keyword in text for keyword in Config.job_keywords):
-        return "未命中目标岗位关键词"
-    return ""
 
 
 def blocked_by_history(job: dict[str, Any], existing_job: dict[str, Any] | None) -> str:

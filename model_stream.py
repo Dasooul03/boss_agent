@@ -108,7 +108,7 @@ def iter_openai_chat_chunks(
     options: dict[str, Any] | None = None,
 ) -> Any:
     if not Config.openai_api_key.strip():
-        raise RuntimeError("外部模型 API Key 未配置")
+        raise RuntimeError("OpenAI API Key 未配置")
     payload = {
         "model": model,
         "messages": messages,
@@ -170,16 +170,16 @@ def iter_openai_chat_chunks(
         if thinking_control_applied:
             runtime_state.emit(
                 "model_thinking_control_retry",
-                "外部模型不支持当前思考控制参数，已移除后重试",
+                "OpenAI 模型不支持当前思考控制参数，已移除后重试",
                 source="model",
             )
             retry_options = dict(options or {})
             retry_options["disable_thinking"] = False
             yield from iter_openai_chat_chunks(messages, model, retry_options)
             return
-        raise RuntimeError(f"外部模型请求失败: HTTP {exc.code} {body[:500]}") from exc
+        raise RuntimeError(f"OpenAI 请求失败: HTTP {exc.code} {body[:500]}") from exc
     except URLError as exc:
-        raise RuntimeError(f"外部模型连接失败: {exc}") from exc
+        raise RuntimeError(f"OpenAI 连接失败: {exc}") from exc
 
 
 def iter_ollama_http_raw_chunks(payload: dict[str, Any]) -> Any:
@@ -264,7 +264,7 @@ def iter_model_chunks(
     options: dict[str, Any] | None = None,
     format_schema: dict[str, Any] | None = None,
 ) -> Any:
-    if Config.model_provider == "openai_compatible":
+    if Config.model_provider == "openai":
         yield from iter_openai_chat_chunks(messages, model, options)
         return
     yield from iter_ollama_chat_chunks(messages, model, options, format_schema)

@@ -6,15 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class AutomationMode(str, Enum):
-    safe = "safe"
-    manual = "manual"
-    semi_auto = "semi_auto"
-    auto = "auto"
-
-
 class ActionType(str, Enum):
-    greet_confirm = "greet_confirm"
     greet_suggestion = "greet_suggestion"
     send_resume = "send_resume"
     already_contacted = "already_contacted"
