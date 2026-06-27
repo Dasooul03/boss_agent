@@ -26,13 +26,15 @@ def _stream_messages(
     options: dict[str, Any] | None = None,
     model: str | None = None,
     format_schema: dict[str, Any] | None = None,
+    early_stop: str | None = None,
 ) -> str:
     return stream_ollama_chat(
         label,
         messages,
-        options=options or DEFAULT_OPTIONS,
+        options=options,
         model=model or Config.think_model,
         format_schema=format_schema,
+        early_stop=early_stop,
     )
 
 
@@ -156,6 +158,7 @@ def calculate_job_score(job_text: str, user_detail: str) -> tuple[dict[str, int]
         ],
         model=Config.think_model,
         options={"temperature": 0.2, "num_ctx": 4096},
+        early_stop="job_score",
     )
     reply = extract_llm_reply(content)
     return _parse_score_breakdown(reply), reply

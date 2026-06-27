@@ -6,9 +6,13 @@ import threading
 import importlib.util
 import json
 import re
+import time
+import webbrowser
 from getpass import getpass
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import database
 import greeting_service
@@ -41,6 +45,7 @@ CLI_CONFIRM_ACTIONS = {
 }
 
 WEB_SCRIPT_PATH = Path(__file__).resolve().parent / "web_script.js"
+BOSS_SEARCH_URL = "https://www.zhipin.com/web/geek/job"
 SESSION_PREPARED = False
 
 DETAIL_EVENT_TYPES = {
@@ -217,6 +222,24 @@ def ask_bool(prompt: str, default: bool = True) -> bool:
     return value in {"y", "yes", "是", "1", "true"}
 
 
+def ask_float(prompt: str, current: float) -> float:
+    while True:
+        value = ask(prompt, str(current)).strip()
+        try:
+            return float(value)
+        except ValueError:
+            print("[配置] 请输入数字。")
+
+
+def ask_int(prompt: str, current: int) -> int:
+    while True:
+        value = ask(prompt, str(current)).strip()
+        try:
+            return int(value)
+        except ValueError:
+            print("[配置] 请输入整数。")
+
+
 def ask_list(prompt: str, current: list[str]) -> list[str]:
     value = ask(prompt + "，多个用逗号分隔", ", ".join(current))
     return [item.strip() for item in value.split(",") if item.strip()]
@@ -259,6 +282,15 @@ def configure_base() -> None:
         "show_model_reasoning": ask_bool("是否显示模型思考过程", bool(current.get("show_model_reasoning", False))),
         "external_model_profile": ask("OpenAI 模型类型 generic/qwen/deepseek/doubao", str(current.get("external_model_profile", "generic"))),
     }
+    if ask_bool("是否配置高级模型参数", False):
+        updates.update({
+            "model_temperature": ask_float("temperature", float(current.get("model_temperature", 0.2))),
+            "model_top_p": ask_float("top_p", float(current.get("model_top_p", 0.8))),
+            "model_repeat_penalty": ask_float("Ollama repeat_penalty", float(current.get("model_repeat_penalty", 1.18))),
+            "model_repeat_last_n": ask_int("Ollama repeat_last_n", int(current.get("model_repeat_last_n", 128))),
+            "model_frequency_penalty": ask_float("OpenAI frequency_penalty", float(current.get("model_frequency_penalty", 0.3))),
+            "model_presence_penalty": ask_float("OpenAI presence_penalty", float(current.get("model_presence_penalty", 0.1))),
+        })
     Config.save(updates)
     runtime_state.emit("config_saved", "配置已保存", source="config", detail=Config.public_dict())
 
@@ -422,6 +454,11 @@ def print_summary() -> None:
         f"模型思考: {'关闭' if Config.disable_model_thinking else '允许'} / "
         f"思考过程: {'显示' if Config.show_model_reasoning else '隐藏'}"
     )
+    print(
+        f"- 模型参数: temp={Config.model_temperature} / top_p={Config.model_top_p} / "
+        f"repeat_penalty={Config.model_repeat_penalty} / repeat_last_n={Config.model_repeat_last_n} / "
+        f"freq_penalty={Config.model_frequency_penalty} / presence_penalty={Config.model_presence_penalty}"
+    )
     print(f"- 简历: {'已保存' if cache.resume.strip() else '未准备'}")
     print(f"- 画像: {'已生成' if cache.cache_status()['profile_generated'] else '未生成'}")
     print(f"- 用户详情: {'已确认' if cache.user_detail.strip() else '未确认'}")
@@ -430,6 +467,46 @@ def print_summary() -> None:
 
 def script_install_url() -> str:
     return f"http://{Config.server_host}:{Config.server_port}/web_script.user.js"
+
+
+def api_health_url() -> str:
+    return f"http://{Config.server_host}:{Config.server_port}/health"
+
+
+def wait_for_api_ready(timeout_seconds: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(api_health_url(), timeout=1.0) as response:
+                if 200 <= response.status < 300:
+                    return True
+        except (OSError, URLError):
+            time.sleep(0.5)
+    return False
+
+
+def show_startup_next_steps() -> None:
+    print("\n[启动] 下一步:")
+    print(f"  1. 确认油猴脚本已安装或更新: {script_install_url()}")
+    print("  2. 刷新 BOSS 搜索页，等待 CLI 显示脚本就绪")
+    print("  3. 输入 start，确认本轮岗位标签和本次打招呼上限后开始")
+
+
+def maybe_open_startup_pages() -> None:
+    enabled = str(os.environ.get("JOB_SEEKER_AUTO_OPEN", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return
+    print("[启动] 等待本地 API 就绪，准备打开浏览器页面...")
+    if not wait_for_api_ready():
+        print("[启动] 本地 API 未在限定时间内就绪，已跳过自动打开浏览器页面。")
+        return
+    urls = [script_install_url(), os.environ.get("JOB_SEEKER_BOSS_URL", BOSS_SEARCH_URL) or BOSS_SEARCH_URL]
+    for url in urls:
+        try:
+            webbrowser.open(url, new=2)
+        except Exception as exc:
+            print(f"[启动] 自动打开失败: {url} / {exc}")
+    print("[启动] 已尝试打开油猴脚本安装/更新页和 BOSS 搜索页。")
 
 
 def read_script_versions() -> tuple[str, str]:
@@ -583,6 +660,10 @@ def show_doctor() -> None:
         print(f"- 当前模型: {Config.think_model} / {installed}")
     if not model_status.get("available") and model_status.get("error"):
         print(f"  错误: {model_status['error']}")
+    print(
+        f"- 模型参数: temp={Config.model_temperature} / top_p={Config.model_top_p} / "
+        f"repeat_penalty={Config.model_repeat_penalty} / freq_penalty={Config.model_frequency_penalty}"
+    )
     script = runtime_state.script_snapshot()
     state = "在线" if script.get("connected") else ("心跳过期" if script.get("stale") else "离线")
     print(f"- 油猴脚本: {state}")
@@ -675,4 +756,6 @@ def run_cli(app) -> None:
     runtime_state.emit("cli_start", "Job Seeker CLI 启动", source="startup")
     run_initialization()
     start_api_server(app)
+    maybe_open_startup_pages()
+    show_startup_next_steps()
     command_loop()

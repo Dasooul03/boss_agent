@@ -22,7 +22,7 @@
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.06-cli-autogreet.18',
+        scriptVersion: '2026.06-cli-autogreet.19',
         resumeIndex: 0, // 第几份简历，从 0 开始递增
         serverHost: 'http://127.0.0.1:33333', // 本地服务的主机地址
         thread: 60, // 分数阈值，低于这个就不发消息了
@@ -31,6 +31,7 @@
         onlyGreet: true, // 仅辅助打招呼，不自动扫描聊天页。
         sessionGreetLimit: 50, // 本次打招呼上限，后端配置会覆盖这里。
         actionDelayMs: 2500, // 页面动作之间的保守等待时间。
+        manualInterventionMaxRetries: 3, // 人工校验自动恢复次数，连续失败后暂停。
     };
 
     let backendOfflineNotified = false;
@@ -430,6 +431,19 @@
         detectManualInterruption() {
             const text = document.body ? document.body.innerText : '';
             return this.detectInterruptionText(text);
+        },
+        manualInterruptionReason(value) {
+            const content = String(value || '');
+            const detected = this.detectInterruptionText(content);
+            if (detected) return detected;
+            const explicit = content.match(/需要人工处理[:：]\s*([^;；\n\r]+)/);
+            if (explicit && explicit[1]) return explicit[1].trim();
+            const detail = content.match(/详情页需要人工处理[:：]\s*([^;；\n\r]+)/);
+            if (detail && detail[1]) return detail[1].trim();
+            return '';
+        },
+        isManualInterruptionError(value) {
+            return Boolean(this.manualInterruptionReason(value));
         },
         contactedReasonFromElement(el) {
             if (!el) return '';
@@ -1017,6 +1031,39 @@
             let greetTimeoutId = null;
             let currentSearchAction = '等待启动';
             let lastBackendControl = 'paused';
+            const manualRecoveryStateKey = '__job_seeker_manual_recovery';
+            let manualInterventionRetryCount = 0;
+
+            const loadManualRecoveryState = () => {
+                try {
+                    const state = JSON.parse(localStorage.getItem(manualRecoveryStateKey) || '{}');
+                    if (!state || !state.timestamp || Date.now() - Number(state.timestamp) > 5 * 60 * 1000) {
+                        return {};
+                    }
+                    return state;
+                } catch (e) {
+                    return {};
+                }
+            };
+
+            const saveManualRecoveryState = (state) => {
+                localStorage.setItem(manualRecoveryStateKey, JSON.stringify({
+                    ...state,
+                    timestamp: Date.now(),
+                }));
+            };
+
+            const clearManualRecoveryState = () => {
+                localStorage.removeItem(manualRecoveryStateKey);
+            };
+
+            const loadedManualRecovery = loadManualRecoveryState();
+            if (Number.isFinite(Number(loadedManualRecovery.nextTagIdx))) {
+                currentTagIdx = Math.max(0, Number(loadedManualRecovery.nextTagIdx));
+            }
+            if (Number.isFinite(Number(loadedManualRecovery.retryCount))) {
+                manualInterventionRetryCount = Math.max(0, Number(loadedManualRecovery.retryCount));
+            }
 
             const scriptHeartbeatDetail = () => ({
                 version: OPTIONS.scriptVersion,
@@ -1217,11 +1264,87 @@
                 }
             };
 
-            const stopForManualInterruption = async (reason, page = 'search') => {
-                logger.add(`需要人工处理: ${reason}`);
+            const resetManualInterventionRecovery = async (label = '') => {
+                if (manualInterventionRetryCount <= 0 && !localStorage.getItem(manualRecoveryStateKey)) return;
+                const previousCount = manualInterventionRetryCount;
+                manualInterventionRetryCount = 0;
+                clearManualRecoveryState();
+                await api.event('manual_intervention_recovery_success', label || '人工校验恢复成功，已回到正常流程', 'script', 'info', {
+                    previousCount,
+                });
+            };
+
+            const handleManualInterruption = async (reason, sourcePage = 'search') => {
+                const finalReason = reason || '未知人工校验';
+                manualInterventionRetryCount += 1;
+                jobHrefs = [];
+                elsLen = 0;
+                page = 0;
+                lastJobListEventKey = '';
+                if (currentJobProgress) {
+                    finishJobProgress('人工校验恢复');
+                }
+
+                if (manualInterventionRetryCount <= OPTIONS.manualInterventionMaxRetries) {
+                    const nextTagIdx = this.tags.length ? (currentTagIdx + 1) % this.tags.length : currentTagIdx;
+                    const nextKeyword = this.tags[nextTagIdx] || '';
+                    const message = `需要人工校验: ${finalReason}，尝试切换关键词恢复 ${manualInterventionRetryCount}/${OPTIONS.manualInterventionMaxRetries}`;
+                    logger.add(message);
+                    setSearchAction(message);
+                    saveManualRecoveryState({
+                        retryCount: manualInterventionRetryCount,
+                        nextTagIdx,
+                        reason: finalReason,
+                    });
+                    await api.event('manual_intervention_recovery_attempt', message, 'script', 'info', {
+                        reason: finalReason,
+                        retryCount: manualInterventionRetryCount,
+                        maxRetries: OPTIONS.manualInterventionMaxRetries,
+                        nextKeyword,
+                        nextTagIdx,
+                        sourcePage,
+                    });
+                    await api.heartbeat('search', 'running', message, {
+                        ...scriptHeartbeatDetail(),
+                        reason: finalReason,
+                        retryCount: manualInterventionRetryCount,
+                        maxRetries: OPTIONS.manualInterventionMaxRetries,
+                        nextKeyword,
+                        sourcePage,
+                    });
+                    currentTagIdx = nextTagIdx;
+                    tools.openTabNSetTimestamp(SEARCHPATH.zhipin, this.targets.search, true);
+                    return true;
+                }
+
+                const message = `连续 ${OPTIONS.manualInterventionMaxRetries} 次恢复失败，已暂停，请人工处理 BOSS 页面验证: ${finalReason}`;
+                manualInterventionRetryCount = 0;
+                clearManualRecoveryState();
                 this.pause = true;
-                await api.heartbeat(page, 'error', `需要人工处理: ${reason}`);
-                await api.event('manual_intervention_required', `需要人工处理: ${reason}`, 'script', 'error', { reason });
+                logger.setPaused(true);
+                logger.add(message);
+                setSearchAction(message);
+                await api.event('manual_intervention_recovery_failed', message, 'script', 'error', {
+                    reason: finalReason,
+                    maxRetries: OPTIONS.manualInterventionMaxRetries,
+                    sourcePage,
+                });
+                await api.event('manual_intervention_required', message, 'script', 'error', { reason: finalReason });
+                await api.heartbeat('search', 'error', message, {
+                    ...scriptHeartbeatDetail(),
+                    reason: finalReason,
+                    maxRetries: OPTIONS.manualInterventionMaxRetries,
+                    sourcePage,
+                });
+                try {
+                    await api.control('pause');
+                } catch (e) {
+                    await api.event('manual_intervention_pause_failed', `人工校验暂停通知失败: ${e}`, 'script', 'error', {
+                        reason: finalReason,
+                    });
+                }
+                lastBackendControl = 'paused';
+                return false;
             };
 
             // 开始广播
@@ -1261,7 +1384,6 @@
                     setSearchAction(`搜索关键词: ${kw}`);
                     const interruption = tools.detectManualInterruption();
                     if (interruption) {
-                        await stopForManualInterruption(interruption, 'search');
                         throw new Error(`需要人工处理: ${interruption}`);
                     }
                     await api.event('search_started', `开始搜索关键词: ${kw}`, 'script', 'info', { keyword: kw });
@@ -1271,6 +1393,7 @@
                     btn.click();
                     await api.event('search_finished', `搜索已提交: ${kw}`, 'script', 'info', { keyword: kw });
                 } catch (e) {
+                    if (tools.isManualInterruptionError(e)) throw e;
                     logger.add('搜索出错');
                     await api.event('search_failed', `搜索出错: ${e}`, 'script', 'error', { keyword: kw });
                     throw new Error('搜索出错');
@@ -1281,6 +1404,10 @@
             const getJobHrefs = async () => {
                 try {
                     setSearchAction('读取职位列表');
+                    const interruption = tools.detectManualInterruption();
+                    if (interruption) {
+                        throw new Error(`需要人工处理: ${interruption}`);
+                    }
                     const jobUl = await tools.waitForOne(SELECTORS.ZHIPIN.SEARCH.JOBLIST_CANDIDATES, 15000);
                     const collect = () => {
                         let aList = [];
@@ -1310,6 +1437,7 @@
                     }
                     return [newHrefs, hrefs];
                 } catch (e) {
+                    if (tools.isManualInterruptionError(e)) throw e;
                     logger.add('获取职位链接出错');
                     await api.event('job_list_failed', `获取职位链接出错: ${e}`, 'script', 'error');
                     throw new Error('获取职位链接出错');
@@ -1321,6 +1449,7 @@
                 let hrefs;
                 [jobHrefs, hrefs] = await getJobHrefs();
                 elsLen = hrefs.length;
+                await resetManualInterventionRecovery('人工校验恢复成功，已读取到正常职位列表');
                 if (jobHrefs.length > 0) {
                     page++;
                     logger.add(`开始浏览第 ${page} 批`);
@@ -1376,7 +1505,6 @@
             const getJobInfo = async (href) => {
                 const interruption = tools.detectManualInterruption();
                 if (interruption) {
-                    await stopForManualInterruption(interruption, 'search');
                     throw new Error(`需要人工处理: ${interruption}`);
                 }
                 // 打开窗口
@@ -1401,6 +1529,7 @@
                 } else try {
                     info = await detailResponse;
                 } catch (e) {
+                    if (tools.isManualInterruptionError(e)) throw e;
                     await api.event(
                         'job_detail_timeout',
                         `详情页未回传职位信息: ${href}`,
@@ -1409,6 +1538,9 @@
                         { url: href, error: String(e), hint: '请确认详情页是否出现 detail / running 心跳；新版脚本会在窗口名匹配时继续回传，不再受 15 秒加载限制' }
                     );
                     info = await fetchJobInfoFallback(href, e);
+                }
+                if (info && info.manual_intervention) {
+                    throw new Error(`需要人工处理: ${info.reason || info.error || '详情页人工校验'}`);
                 }
                 if (!info || !info.title || !info.detail) {
                     throw new Error('职位详情缺少标题或描述');
@@ -1451,7 +1583,7 @@
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const interruptionText = doc.body ? doc.body.innerText : '';
                     const interruption = tools.detectInterruptionText(interruptionText);
-                    if (interruption) throw new Error(`详情页需要人工处理: ${interruption}`);
+                    if (interruption) throw new Error(`需要人工处理: ${interruption}`);
                     const info = extractJobInfoFromDocument(doc, href, 'fetch_fallback');
                     if (!info.title || !info.detail) {
                         throw new Error('详情页 fetch 兜底解析失败：缺少标题或描述');
@@ -1463,6 +1595,13 @@
                     });
                     return info;
                 } catch (fallbackError) {
+                    if (tools.isManualInterruptionError(fallbackError)) {
+                        await api.event('job_detail_manual_intervention', `详情页需要人工校验: ${fallbackError}`, 'script', 'error', {
+                            url: href,
+                            originalError: String(originalError),
+                        });
+                        throw fallbackError;
+                    }
                     await api.event('job_detail_fetch_fallback_failed', `详情页兜底解析失败: ${fallbackError}`, 'script', 'error', { url: href, originalError: String(originalError) });
                     throw new Error(`详情页广播失败且兜底解析失败: ${originalError}; ${fallbackError}`);
                 }
@@ -1472,6 +1611,13 @@
                 try {
                     return await getJobInfo(href);
                 } catch (firstError) {
+                    if (tools.isManualInterruptionError(firstError)) {
+                        await api.event('job_detail_manual_intervention', `职位详情触发人工校验，切换关键词恢复: ${href}`, 'script', 'error', {
+                            url: href,
+                            error: String(firstError),
+                        });
+                        throw firstError;
+                    }
                     await api.event('job_detail_failed', `职位详情读取失败，准备重试一次: ${href}`, 'script', 'error', {
                         url: href,
                         error: String(firstError),
@@ -1480,6 +1626,14 @@
                     try {
                         return await getJobInfo(href);
                     } catch (secondError) {
+                        if (tools.isManualInterruptionError(secondError)) {
+                            await api.event('job_detail_manual_intervention', `职位详情重试触发人工校验，切换关键词恢复: ${href}`, 'script', 'error', {
+                                url: href,
+                                firstError: String(firstError),
+                                secondError: String(secondError),
+                            });
+                            throw secondError;
+                        }
                         await api.event('job_detail_failed', `职位详情读取重试失败，跳过职位: ${href}`, 'script', 'error', {
                             url: href,
                             firstError: String(firstError),
@@ -1608,6 +1762,11 @@
                     }
                     await openGreetingChat(jobInfo, href, '入口请求成功或已有聊天页地址');
                 } catch (e) {
+                    if (tools.isManualInterruptionError(e)) {
+                        finishGreetingWait();
+                        await handleManualInterruption(tools.manualInterruptionReason(e), 'chat_greet');
+                        return;
+                    }
                     if (jobInfo.chatUrl) {
                         logger.add(`入口请求失败，尝试直接打开聊天页: ${jobInfo.chatUrl}`);
                         await api.event('greet_entry_fallback', `入口请求失败，尝试直接打开聊天页: ${e}`, 'script', 'info', { title: jobInfo.title, chatUrl: jobInfo.chatUrl });
@@ -1653,6 +1812,10 @@
                     }
                     finishGreetingWait();
                     finishJobProgress(data.success ? '打招呼成功' : '打招呼失败');
+                    if (!data.success && data.error && tools.isManualInterruptionError(data.error)) {
+                        await handleManualInterruption(tools.manualInterruptionReason(data.error), 'chat_greet');
+                        return;
+                    }
                     if (data.success && isSessionLimitReached()) {
                         await stopForSessionLimit(Number(data.sessionGreetCount || tools.getSessionGreetCount()));
                         return;
@@ -1708,7 +1871,7 @@
                     if (waitingForGreeting) return;
                     const interruption = tools.detectManualInterruption();
                     if (interruption) {
-                        await stopForManualInterruption(interruption, 'search');
+                        await handleManualInterruption(interruption, 'search');
                         return;
                     }
                     // 如果暂停，则跳过
@@ -1826,6 +1989,10 @@
                         setTimeout(loop, 0);
                     }
                 } catch (e) {
+                    if (tools.isManualInterruptionError(e)) {
+                        await handleManualInterruption(tools.manualInterruptionReason(e), 'search');
+                        return;
+                    }
                     console.log(e);
                     logger.add(`循环时出错: ${e}`);
                     setSearchAction(`循环出错，稍后继续: ${e}`);
@@ -1893,6 +2060,10 @@
                     // 开始循环
                     loop();
                 } catch (e) {
+                    if (tools.isManualInterruptionError(e)) {
+                        await handleManualInterruption(tools.manualInterruptionReason(e), 'search');
+                        return;
+                    }
                     started = false;
                     this.pause = true;
                     logger.add(`启动失败: ${e}`);
@@ -2035,6 +2206,25 @@
                         await api.heartbeat('detail', 'idle', '详情页独立打开，未执行自动动作');
                     }
                 } catch (e) {
+                    const now = new Date().getTime();
+                    const detailOpenedAt = tools.getTimestamp(this.targets.detail);
+                    const detailAge = detailOpenedAt ? now - detailOpenedAt : null;
+                    const isFromSearch = window.name === this.targets.detail || (detailAge !== null && detailAge < OPTIONS.timestampTimeout);
+                    const manualReason = tools.manualInterruptionReason(e);
+                    if (manualReason && isFromSearch) {
+                        await this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, {
+                            manual_intervention: true,
+                            reason: manualReason,
+                            error: String(e),
+                            source: 'detail_error',
+                        }).catch(async (sendError) => {
+                            await api.event('broadcast_send_failed', `详情页人工校验回传失败: ${sendError}`, 'script', 'error', {
+                                path: location.pathname,
+                                windowName: window.name,
+                            });
+                        });
+                        setTimeout(() => window.close(), 500);
+                    }
                     await api.heartbeat('detail', 'error', String(e), { path: location.pathname, windowName: window.name });
                     await api.event('job_detail_failed', `详情页读取失败: ${e}`, 'script', 'error', { path: location.pathname, windowName: window.name });
                 }

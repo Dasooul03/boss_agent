@@ -37,6 +37,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "disable_model_thinking": True,
     "show_model_reasoning": False,
     "external_model_profile": "generic",
+    "model_temperature": 0.2,
+    "model_top_p": 0.8,
+    "model_repeat_penalty": 1.18,
+    "model_repeat_last_n": 128,
+    "model_frequency_penalty": 0.3,
+    "model_presence_penalty": 0.1,
 }
 
 
@@ -52,6 +58,22 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on", "是", "显示"}
     return bool(value)
+
+
+def _as_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _as_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
 
 
 def _detect_external_model_profile(data: dict[str, Any]) -> str:
@@ -94,6 +116,12 @@ class Config:
     disable_model_thinking = DEFAULT_CONFIG["disable_model_thinking"]
     show_model_reasoning = DEFAULT_CONFIG["show_model_reasoning"]
     external_model_profile = DEFAULT_CONFIG["external_model_profile"]
+    model_temperature = DEFAULT_CONFIG["model_temperature"]
+    model_top_p = DEFAULT_CONFIG["model_top_p"]
+    model_repeat_penalty = DEFAULT_CONFIG["model_repeat_penalty"]
+    model_repeat_last_n = DEFAULT_CONFIG["model_repeat_last_n"]
+    model_frequency_penalty = DEFAULT_CONFIG["model_frequency_penalty"]
+    model_presence_penalty = DEFAULT_CONFIG["model_presence_penalty"]
 
     @classmethod
     def load(cls) -> dict[str, Any]:
@@ -139,6 +167,12 @@ class Config:
             data["external_model_profile"] = DEFAULT_CONFIG["external_model_profile"]
         data["disable_model_thinking"] = _as_bool(data.get("disable_model_thinking"))
         data["show_model_reasoning"] = _as_bool(data.get("show_model_reasoning"))
+        data["model_temperature"] = _as_float(data.get("model_temperature"), 0.2, 0.0, 2.0)
+        data["model_top_p"] = _as_float(data.get("model_top_p"), 0.8, 0.05, 1.0)
+        data["model_repeat_penalty"] = _as_float(data.get("model_repeat_penalty"), 1.18, 0.8, 2.0)
+        data["model_repeat_last_n"] = _as_int(data.get("model_repeat_last_n"), 128, 0, 4096)
+        data["model_frequency_penalty"] = _as_float(data.get("model_frequency_penalty"), 0.3, 0.0, 2.0)
+        data["model_presence_penalty"] = _as_float(data.get("model_presence_penalty"), 0.1, 0.0, 2.0)
         for key in DEFAULT_CONFIG:
             setattr(cls, key, data.get(key, DEFAULT_CONFIG[key]))
 

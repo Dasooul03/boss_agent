@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 import time
 from typing import Any
@@ -13,12 +14,19 @@ from runtime_state import runtime_state
 
 
 DEFAULT_MODEL_OPTIONS = {
-    "temperature": 0.6,
+    "temperature": 0.2,
+    "top_p": 0.8,
     "num_ctx": 10240,
 }
 
 MODEL_CALL_TIMEOUT_SECONDS = 180
 MODEL_MAX_RETRIES = 3
+
+JOB_SCORE_EARLY_STOP_LABELS = {"计算职位匹配度"}
+
+
+class ModelRepetitionError(RuntimeError):
+    pass
 
 
 def get_value(value: Any, key: str, default: Any = "") -> Any:
@@ -68,11 +76,62 @@ def ollama_chat_url() -> str:
     return Config.ollama_host.rstrip("/") + "/api/chat"
 
 
+def configured_model_options(options: dict[str, Any] | None = None) -> dict[str, Any]:
+    merged: dict[str, Any] = {
+        "temperature": Config.model_temperature,
+        "top_p": Config.model_top_p,
+        "num_ctx": 10240,
+        "repeat_penalty": Config.model_repeat_penalty,
+        "repeat_last_n": Config.model_repeat_last_n,
+        "frequency_penalty": Config.model_frequency_penalty,
+        "presence_penalty": Config.model_presence_penalty,
+    }
+    merged.update(options or {})
+    return merged
+
+
+def retry_model_options(options: dict[str, Any], repetition_retry_count: int) -> dict[str, Any]:
+    if repetition_retry_count <= 0:
+        return dict(options)
+    updated = dict(options)
+    temperature = float(updated.get("temperature", Config.model_temperature))
+    updated["temperature"] = max(0.1, temperature - 0.05 * repetition_retry_count)
+    repeat_penalty = float(updated.get("repeat_penalty", Config.model_repeat_penalty))
+    updated["repeat_penalty"] = min(1.35, repeat_penalty + 0.08 * repetition_retry_count)
+    frequency_penalty = float(updated.get("frequency_penalty", Config.model_frequency_penalty))
+    updated["frequency_penalty"] = min(1.0, frequency_penalty + 0.2 * repetition_retry_count)
+    presence_penalty = float(updated.get("presence_penalty", Config.model_presence_penalty))
+    updated["presence_penalty"] = min(0.6, presence_penalty + 0.15 * repetition_retry_count)
+    return updated
+
+
+def ollama_payload_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    options = options or {}
+    allowed = {
+        "temperature",
+        "top_p",
+        "num_ctx",
+        "num_predict",
+        "repeat_penalty",
+        "repeat_last_n",
+    }
+    payload = {key: options[key] for key in allowed if key in options}
+    if "max_tokens" in options and "num_predict" not in payload:
+        payload["num_predict"] = options["max_tokens"]
+    return payload
+
+
 def openai_payload_options(options: dict[str, Any] | None) -> dict[str, Any]:
     options = options or {}
     payload: dict[str, Any] = {}
     if "temperature" in options:
         payload["temperature"] = options["temperature"]
+    if "top_p" in options:
+        payload["top_p"] = options["top_p"]
+    if "frequency_penalty" in options:
+        payload["frequency_penalty"] = options["frequency_penalty"]
+    if "presence_penalty" in options:
+        payload["presence_penalty"] = options["presence_penalty"]
     if "num_predict" in options:
         payload["max_tokens"] = options["num_predict"]
     if "max_tokens" in options:
@@ -215,9 +274,10 @@ def iter_ollama_chat_chunks(
     options: dict[str, Any] | None = None,
     format_schema: dict[str, Any] | None = None,
 ) -> Any:
-    request_options = dict(options or DEFAULT_MODEL_OPTIONS)
-    think = request_options.pop("think", None)
-    disable_thinking = should_disable_thinking(options)
+    raw_options = dict(options or DEFAULT_MODEL_OPTIONS)
+    think = raw_options.pop("think", None)
+    disable_thinking = should_disable_thinking(raw_options)
+    request_options = ollama_payload_options(raw_options)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -273,6 +333,86 @@ def iter_model_chunks(
     yield from iter_ollama_chat_chunks(messages, model, options, format_schema)
 
 
+def visible_model_text(content: str) -> str:
+    text = content or ""
+    if "<think>" in text:
+        close_index = text.rfind("</think>")
+        if close_index >= 0:
+            text = text[close_index + len("</think>"):]
+        else:
+            text = text.split("<think>", 1)[0]
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def parse_job_score_block(content: str) -> str | None:
+    text = visible_model_text(content)
+    if not text:
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) != 3:
+        return None
+    pattern = re.compile(r"^(学历专业|技术栈|项目经验)[:：]\s*(100|[1-9]?\d)$")
+    expected_order = ["学历专业", "技术栈", "项目经验"]
+    normalized: list[str] = []
+    for index, line in enumerate(lines):
+        match = pattern.fullmatch(line)
+        if not match or match.group(1) != expected_order[index]:
+            return None
+        normalized.append(f"{match.group(1)}: {match.group(2)}")
+    return "\n".join(normalized)
+
+
+def compact_model_text(value: str, limit: int = 120) -> str:
+    text = visible_model_text(value)
+    if not text and "<think>" in (value or ""):
+        text = re.sub(r"</?think>", "", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+class RepetitionDetector:
+    def __init__(self) -> None:
+        self._last_chunk = ""
+        self._same_chunk_count = 0
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return re.sub(r"\s+", "", value or "")
+
+    def feed(self, chunk: str, content: str) -> str:
+        normalized_chunk = self._normalize(chunk)
+        if len(normalized_chunk) >= 8 and normalized_chunk == self._last_chunk:
+            self._same_chunk_count += 1
+            if self._same_chunk_count >= 5:
+                return f"连续重复片段: {normalized_chunk[:40]}"
+        elif normalized_chunk:
+            self._last_chunk = normalized_chunk
+            self._same_chunk_count = 1
+
+        analysis_text = visible_model_text(content)
+        if not analysis_text and "<think>" in (content or ""):
+            analysis_text = re.sub(r"</?think>", "", content or "")
+        text = self._normalize(analysis_text)
+        if len(text) < 120:
+            return ""
+
+        tail = text[-700:]
+        for size in range(12, 121):
+            unit = tail[-size:]
+            if len(set(unit)) <= 1:
+                continue
+            if tail.endswith(unit * 4):
+                return f"尾部循环片段: {unit[:40]}"
+
+        spaced_tail = re.sub(r"\s+", " ", analysis_text[-900:]).strip()
+        parts = [part.strip() for part in re.split(r"[。！？!?；;\n]+", spaced_tail) if len(part.strip()) >= 8]
+        if parts:
+            last = parts[-1]
+            if spaced_tail.count(last) >= 4:
+                return f"重复句子: {last[:60]}"
+        return ""
+
+
 class ModelChunkPrinter:
     def __init__(self, show_reasoning: bool = False) -> None:
         self._pending = ""
@@ -326,14 +466,21 @@ def stream_ollama_chat(
     options: dict[str, Any] | None = None,
     model: str | None = None,
     format_schema: dict[str, Any] | None = None,
+    early_stop: str | None = None,
 ) -> str:
     selected_model = model or Config.think_model
     total_attempts = MODEL_MAX_RETRIES + 1
+    base_options = configured_model_options(options)
+    early_stop = early_stop or ("job_score" if label in JOB_SCORE_EARLY_STOP_LABELS else None)
 
-    def start_worker(result_queue: queue.Queue[tuple[str, Any]], stop_event: threading.Event) -> threading.Thread:
+    def start_worker(
+        result_queue: queue.Queue[tuple[str, Any]],
+        stop_event: threading.Event,
+        attempt_options: dict[str, Any],
+    ) -> threading.Thread:
         def worker() -> None:
             try:
-                for chunk in iter_model_chunks(messages, selected_model, options or DEFAULT_MODEL_OPTIONS, format_schema):
+                for chunk in iter_model_chunks(messages, selected_model, attempt_options, format_schema):
                     if stop_event.is_set():
                         break
                     result_queue.put(("chunk", chunk))
@@ -368,18 +515,40 @@ def stream_ollama_chat(
             )
             print(f"\n[模型] {message}", flush=True)
 
+    def repetition_retry_message(reason: str, attempt: int, attempt_options: dict[str, Any]) -> None:
+        if attempt <= MODEL_MAX_RETRIES:
+            message = f"模型输出疑似重复循环: {label}，第 {attempt}/{MODEL_MAX_RETRIES} 次重试"
+            runtime_state.emit(
+                "model_repetition_retry",
+                message,
+                source="model",
+                detail={
+                    "label": label,
+                    "provider": Config.model_provider,
+                    "model": selected_model,
+                    "attempt": attempt,
+                    "max_retries": MODEL_MAX_RETRIES,
+                    "reason": reason,
+                    "options": attempt_options if Config.log_verbosity == "debug" else {},
+                },
+            )
+            print(f"\n[模型] 模型疑似重复，正在重试 {attempt}/{MODEL_MAX_RETRIES}", flush=True)
+
     runtime_state.emit("model_started", f"{label} 开始", source="model")
     print(f"\n[模型] {label}", flush=True)
     print(f"[模型] provider={Config.model_provider} model={selected_model}", flush=True)
 
     last_error: Any = None
     show_reasoning = bool(Config.show_model_reasoning) or Config.log_verbosity == "debug"
+    repetition_retry_count = 0
 
     for attempt in range(1, total_attempts + 1):
+        attempt_options = retry_model_options(base_options, repetition_retry_count)
         result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         stop_event = threading.Event()
-        start_worker(result_queue, stop_event)
+        start_worker(result_queue, stop_event, attempt_options)
         content = ""
+        detector = RepetitionDetector()
         printer = ModelChunkPrinter(show_reasoning=show_reasoning)
         started_at = time.monotonic()
         has_chunk = False
@@ -439,6 +608,45 @@ def stream_ollama_chat(
                 has_chunk = True
                 content += chunk
                 printer.feed(chunk)
+                if early_stop == "job_score":
+                    score_block = parse_job_score_block(content)
+                    if score_block:
+                        stop_event.set()
+                        printer.flush()
+                        print("", flush=True)
+                        runtime_state.emit(
+                            "model_early_stop",
+                            f"岗位评分已取得标准三行，提前结束模型读取: {label}",
+                            source="model",
+                            detail={"label": label, "score_block": score_block},
+                        )
+                        if Config.log_verbosity != "debug":
+                            print("[模型] 岗位评分已取得标准三行，提前结束模型读取", flush=True)
+                        runtime_state.emit("model_finished", f"{label} 完成", source="model")
+                        return score_block
+                repetition_reason = detector.feed(chunk, content)
+                if repetition_reason:
+                    stop_event.set()
+                    printer.flush()
+                    print("", flush=True)
+                    last_error = ModelRepetitionError(repetition_reason)
+                    runtime_state.emit(
+                        "model_repetition_detected",
+                        f"模型输出疑似重复循环: {label}",
+                        source="model",
+                        level="error",
+                        detail={
+                            "label": label,
+                            "provider": Config.model_provider,
+                            "model": selected_model,
+                            "attempt": attempt,
+                            "reason": repetition_reason,
+                            "preview": compact_model_text(content),
+                        },
+                    )
+                    repetition_retry_count += 1
+                    repetition_retry_message(repetition_reason, attempt, attempt_options)
+                    break
                 continue
 
             if item_type == "error":
