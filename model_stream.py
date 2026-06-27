@@ -471,7 +471,7 @@ class RepetitionDetector:
                 return f"尾部循环片段: {unit[:40]}"
 
         spaced_tail = re.sub(r"\s+", " ", analysis_text[-900:]).strip()
-        parts = [part.strip() for part in re.split(r"[。！？!?；;\n]+", spaced_tail) if len(part.strip()) >= 8]
+        parts = [part.strip() for part in re.split(r"[。！？!?；;\n，,]+", spaced_tail) if len(part.strip()) >= 16]
         if parts:
             last = parts[-1]
             if spaced_tail.count(last) >= 4:
