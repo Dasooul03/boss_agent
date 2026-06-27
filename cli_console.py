@@ -41,6 +41,7 @@ CLI_CONFIRM_ACTIONS = {
 }
 
 WEB_SCRIPT_PATH = Path(__file__).resolve().parent / "web_script.js"
+SESSION_PREPARED = False
 
 DETAIL_EVENT_TYPES = {
     "message_send_failed",
@@ -309,6 +310,53 @@ def edit_tags() -> None:
     print(f"[配置] 岗位标签已保存: {'、'.join(cache.tags)}")
 
 
+def prepare_session_start(force: bool = False) -> bool:
+    global SESSION_PREPARED
+    if SESSION_PREPARED and runtime_state.control != "stopped" and not force:
+        return True
+
+    cache.load()
+    if not cache.tags:
+        if not cache.resume.strip():
+            print("[配置] 当前没有简历，无法生成本轮岗位标签。")
+            runtime_state.emit("session_prepare_failed", "当前没有简历，无法生成本轮岗位标签", source="config", level="error")
+            return False
+        profile = cache.generate_profile()
+        cache.write_tags_file(profile.get("tags", []))
+
+    tags_path = cache.write_tags_file()
+    open_editor(tags_path, "打开编辑器确认本轮岗位搜索标签", "session_tags_edit")
+    cache.save_tags(tags_path.read_text(encoding="utf-8"))
+    if not cache.tags:
+        print("[配置] 岗位标签为空，请至少保留一个搜索关键词。")
+        runtime_state.emit("session_prepare_failed", "岗位标签为空，本轮未启动", source="config", level="error")
+        return False
+
+    while True:
+        raw_limit = ask("本次最多打招呼数量", str(Config.session_greet_limit))
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            print("[配置] 请输入整数。")
+            continue
+        if limit <= 0:
+            print("[配置] 本次最多打招呼数量必须大于 0。")
+            continue
+        break
+
+    Config.save({"session_greet_limit": limit})
+    SESSION_PREPARED = True
+    runtime_state.emit(
+        "session_config_saved",
+        f"本轮设置已确认: 标签 {len(cache.tags)} 个 / 本次上限 {limit}",
+        source="config",
+        detail={"tags": cache.tags, "session_greet_limit": limit},
+    )
+    print(f"[配置] 本轮岗位标签: {'、'.join(cache.tags)}")
+    print(f"[配置] 本次最多打招呼数量: {limit}")
+    return True
+
+
 def ensure_greeting() -> None:
     greeting = greeting_service.get_greeting()
     if greeting.get("confirmed") and ask_bool("检测到已有打招呼用语，是否继续使用", True):
@@ -428,7 +476,13 @@ def show_status() -> None:
 
 
 def show_control_result(command: str) -> None:
+    global SESSION_PREPARED
+    if command == "resume" and (not SESSION_PREPARED or runtime_state.control == "stopped"):
+        if not prepare_session_start(force=True):
+            return
     runtime_state.set_control(command)
+    if command == "stop":
+        SESSION_PREPARED = False
     payload = runtime_state.control_payload()
     script = payload["script"]
     print(f"[控制] {payload['message']}")

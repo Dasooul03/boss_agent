@@ -17,6 +17,9 @@ DEFAULT_MODEL_OPTIONS = {
     "num_ctx": 10240,
 }
 
+MODEL_CALL_TIMEOUT_SECONDS = 180
+MODEL_MAX_RETRIES = 3
+
 
 def get_value(value: Any, key: str, default: Any = "") -> Any:
     if isinstance(value, dict):
@@ -128,7 +131,7 @@ def iter_openai_chat_chunks(
     )
     try:
         reasoning_open = False
-        with urlopen(request, timeout=60) as response:
+        with urlopen(request, timeout=MODEL_CALL_TIMEOUT_SECONDS) as response:
             for raw_line in response:
                 line = raw_line.decode("utf-8", errors="ignore").strip()
                 if not line or not line.startswith("data:"):
@@ -190,7 +193,7 @@ def iter_ollama_http_raw_chunks(payload: dict[str, Any]) -> Any:
         method="POST",
     )
     try:
-        with urlopen(request, timeout=300) as response:
+        with urlopen(request, timeout=MODEL_CALL_TIMEOUT_SECONDS) as response:
             for raw_line in response:
                 line = raw_line.decode("utf-8", errors="ignore").strip()
                 if not line:
@@ -324,57 +327,146 @@ def stream_ollama_chat(
     model: str | None = None,
     format_schema: dict[str, Any] | None = None,
 ) -> str:
-    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
     selected_model = model or Config.think_model
+    total_attempts = MODEL_MAX_RETRIES + 1
 
-    def worker() -> None:
-        try:
-            for chunk in iter_model_chunks(messages, selected_model, options or DEFAULT_MODEL_OPTIONS, format_schema):
-                result_queue.put(("chunk", chunk))
-            result_queue.put(("done", None))
-        except Exception as exc:
-            result_queue.put(("error", exc))
+    def start_worker(result_queue: queue.Queue[tuple[str, Any]], stop_event: threading.Event) -> threading.Thread:
+        def worker() -> None:
+            try:
+                for chunk in iter_model_chunks(messages, selected_model, options or DEFAULT_MODEL_OPTIONS, format_schema):
+                    if stop_event.is_set():
+                        break
+                    result_queue.put(("chunk", chunk))
+                if not stop_event.is_set():
+                    result_queue.put(("done", None))
+            except Exception as exc:
+                if not stop_event.is_set():
+                    result_queue.put(("error", exc))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        return thread
+
+    def retry_message(reason: str, attempt: int, error: Any | None = None) -> None:
+        retry_no = attempt
+        if retry_no <= MODEL_MAX_RETRIES:
+            message = f"模型调用{reason}: {label}，第 {retry_no}/{MODEL_MAX_RETRIES} 次重试"
+            runtime_state.emit(
+                "model_retry",
+                message,
+                source="model",
+                level="error" if reason == "失败" else "info",
+                detail={
+                    "label": label,
+                    "provider": Config.model_provider,
+                    "model": selected_model,
+                    "attempt": attempt,
+                    "max_retries": MODEL_MAX_RETRIES,
+                    "timeout_seconds": MODEL_CALL_TIMEOUT_SECONDS,
+                    "error": str(error or ""),
+                },
+            )
+            print(f"\n[模型] {message}", flush=True)
 
     runtime_state.emit("model_started", f"{label} 开始", source="model")
     print(f"\n[模型] {label}", flush=True)
     print(f"[模型] provider={Config.model_provider} model={selected_model}", flush=True)
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
 
-    content = ""
+    last_error: Any = None
     show_reasoning = bool(Config.show_model_reasoning) or Config.log_verbosity == "debug"
-    printer = ModelChunkPrinter(show_reasoning=show_reasoning)
-    started_at = time.monotonic()
-    has_chunk = False
-    next_wait_notice = 10
 
-    while True:
-        seconds = int(time.monotonic() - started_at)
-        try:
-            item_type, payload = result_queue.get(timeout=1)
-        except queue.Empty:
-            if seconds >= next_wait_notice:
-                message = "等待模型首个响应" if not has_chunk else "模型正在思考/生成"
-                print(f"\n[模型] {message}... {seconds}s", flush=True)
-                next_wait_notice += 10
-            continue
+    for attempt in range(1, total_attempts + 1):
+        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        stop_event = threading.Event()
+        start_worker(result_queue, stop_event)
+        content = ""
+        printer = ModelChunkPrinter(show_reasoning=show_reasoning)
+        started_at = time.monotonic()
+        has_chunk = False
+        next_wait_notice = 10
+        if attempt > 1:
+            runtime_state.emit(
+                "model_attempt_started",
+                f"{label} 第 {attempt}/{total_attempts} 次调用开始",
+                source="model",
+                detail={
+                    "label": label,
+                    "provider": Config.model_provider,
+                    "model": selected_model,
+                    "attempt": attempt,
+                    "total_attempts": total_attempts,
+                },
+            )
+            print(f"\n[模型] {label} 第 {attempt}/{total_attempts} 次调用", flush=True)
 
-        if item_type == "chunk":
-            chunk = str(payload or "")
-            if not chunk:
+        while True:
+            seconds = int(time.monotonic() - started_at)
+            if seconds >= MODEL_CALL_TIMEOUT_SECONDS:
+                stop_event.set()
+                printer.flush()
+                print("", flush=True)
+                last_error = TimeoutError(f"{label} 超过 {MODEL_CALL_TIMEOUT_SECONDS} 秒未完成")
+                runtime_state.emit(
+                    "model_timeout",
+                    f"模型调用超时: {label}",
+                    source="model",
+                    level="error",
+                    detail={
+                        "label": label,
+                        "provider": Config.model_provider,
+                        "model": selected_model,
+                        "attempt": attempt,
+                        "max_retries": MODEL_MAX_RETRIES,
+                        "timeout_seconds": MODEL_CALL_TIMEOUT_SECONDS,
+                    },
+                )
+                retry_message("超时", attempt, last_error)
+                break
+
+            try:
+                item_type, payload = result_queue.get(timeout=1)
+            except queue.Empty:
+                if seconds >= next_wait_notice:
+                    message = "等待模型首个响应" if not has_chunk else "模型正在思考/生成"
+                    print(f"\n[模型] {message}... {seconds}s", flush=True)
+                    next_wait_notice += 10
                 continue
-            has_chunk = True
-            content += chunk
-            printer.feed(chunk)
-            continue
 
-        if item_type == "error":
+            if item_type == "chunk":
+                chunk = str(payload or "")
+                if not chunk:
+                    continue
+                has_chunk = True
+                content += chunk
+                printer.feed(chunk)
+                continue
+
+            if item_type == "error":
+                printer.flush()
+                print("", flush=True)
+                last_error = payload
+                retry_message("失败", attempt, payload)
+                break
+
             printer.flush()
             print("", flush=True)
-            runtime_state.emit("model_failed", f"{label} 失败: {payload}", source="model", level="error")
-            raise payload
+            runtime_state.emit("model_finished", f"{label} 完成", source="model")
+            return content
 
-        printer.flush()
-        print("", flush=True)
-        runtime_state.emit("model_finished", f"{label} 完成", source="model")
-        return content
+    message = f"模型调用失败: {label}，已达到最大重试次数"
+    runtime_state.emit(
+        "model_failed",
+        f"{message}: {last_error}",
+        source="model",
+        level="error",
+        detail={
+            "label": label,
+            "provider": Config.model_provider,
+            "model": selected_model,
+            "max_retries": MODEL_MAX_RETRIES,
+            "timeout_seconds": MODEL_CALL_TIMEOUT_SECONDS,
+            "error": str(last_error or ""),
+        },
+    )
+    print(f"\n[模型] {message}", flush=True)
+    raise RuntimeError(f"{message}: {last_error}")

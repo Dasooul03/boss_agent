@@ -22,7 +22,7 @@
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.06-cli-autogreet.17',
+        scriptVersion: '2026.06-cli-autogreet.18',
         resumeIndex: 0, // 第几份简历，从 0 开始递增
         serverHost: 'http://127.0.0.1:33333', // 本地服务的主机地址
         thread: 60, // 分数阈值，低于这个就不发消息了
@@ -1037,13 +1037,17 @@
 
             // 日志启动暂停事件
             const logger = new Logger(async () => {
-                const session = tools.getGreetSession();
-                if (!session.runId || session.ended) {
-                    beginGreetSession('开始新一轮');
+                const res = await api.heartbeat('search', this.pause ? 'paused' : 'idle', '等待 CLI start', scriptHeartbeatDetail());
+                applyBackendConfig(res.config);
+                if (res.control === 'running' || res.should_start) {
+                    this.pause = false;
+                    logger.setPaused(false);
+                    started ? loop() : main();
+                    return;
                 }
-                await api.control('resume');
-                this.pause = false;
-                started ? loop() : main();
+                logger.setPaused(true);
+                this.pause = true;
+                logger.add('请回到 CLI 输入 start，确认本轮岗位标签和本次打招呼上限后开始');
             }, async () => {
                 await api.control('pause');
                 this.pause = true;
@@ -1273,25 +1277,6 @@
                 }
             };
 
-            const scrollJobList = async () => {
-                const containers = SELECTORS.ZHIPIN.SEARCH.JOBLIST_CANDIDATES
-                    .map(selector => document.querySelector(selector))
-                    .filter(Boolean);
-                const scrollable = containers.find(el => el.scrollHeight > el.clientHeight);
-                if (scrollable) {
-                    scrollable.scrollTop = scrollable.scrollHeight;
-                    scrollable.dispatchEvent(new Event('scroll', { bubbles: true }));
-                }
-                const cards = document.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS_CANDIDATES.join(','));
-                const lastCard = cards[cards.length - 1];
-                if (lastCard && lastCard.scrollIntoView) {
-                    lastCard.scrollIntoView({ block: 'end' });
-                } else {
-                    window.scrollBy(0, window.innerHeight || 800);
-                }
-                await tools.asyncSleep(1500);
-            };
-
             // 获取职位链接
             const getJobHrefs = async () => {
                 try {
@@ -1331,34 +1316,21 @@
                 }
             };
 
-            // 加载下一批职位。BOSS 搜索页是滚动加载，不是真分页。
+            // 读取当前关键词的职位。没有新职位时不滚动，直接切换关键词。
             const nextPage = async () => {
-                for (let attempt = 0; attempt <= 3; attempt++) {
-                    let hrefs;
-                    [jobHrefs, hrefs] = await getJobHrefs();
-                    elsLen = hrefs.length;
-                    if (jobHrefs.length > 0) {
-                        page++;
-                        logger.add(`开始浏览第 ${page} 批`);
-                        await scrollJobList();
-                        return true;
-                    }
-                    if (attempt < 3) {
-                        logger.add(`未发现新职位，滚动加载更多 (${attempt + 1}/3)`);
-                        await api.event(
-                            'job_list_scroll_retry',
-                            `未发现新职位，滚动加载更多 (${attempt + 1}/3)`,
-                            'script',
-                            'info',
-                            { page, knownCount: hrefs.length, keyword: this.tags[currentTagIdx] || '' }
-                        );
-                        await scrollJobList();
-                    }
+                let hrefs;
+                [jobHrefs, hrefs] = await getJobHrefs();
+                elsLen = hrefs.length;
+                if (jobHrefs.length > 0) {
+                    page++;
+                    logger.add(`开始浏览第 ${page} 批`);
+                    return true;
                 }
-                logger.add('当前关键词滚动 3 次仍无新职位');
-                await api.event('job_list_empty', '当前关键词滚动 3 次仍无新职位', 'script', 'info', {
+                const keyword = this.tags[currentTagIdx] || '';
+                logger.add(`当前关键词没有新职位: ${keyword || '-'}`);
+                await api.event('job_list_empty', `当前关键词没有新职位: ${keyword || '-'}`, 'script', 'info', {
                     page,
-                    keyword: this.tags[currentTagIdx] || '',
+                    keyword,
                     knownCount: elsLen,
                 });
                 return false;
@@ -1367,18 +1339,21 @@
             document.nextPage = nextPage
 
             const switchToNextKeyword = async (reason = '') => {
-                while (currentTagIdx + 1 < this.tags.length) {
-                    currentTagIdx += 1;
+                if (!this.tags.length) return false;
+                const total = this.tags.length;
+                for (let attempt = 0; attempt < total; attempt++) {
+                    currentTagIdx = (currentTagIdx + 1) % total;
                     jobHrefs = [];
                     elsLen = 0;
                     page = 0;
                     lastJobListEventKey = '';
                     const keyword = this.tags[currentTagIdx];
                     const suffix = reason ? `（${reason}）` : '';
-                    logger.add(`切换到下一个搜索关键词: ${keyword}${suffix}`);
-                    await api.event('keyword_switched', `切换到下一个搜索关键词: ${keyword}`, 'script', 'info', {
+                    logger.add(`切换搜索关键词: ${keyword}${suffix}`);
+                    await api.event('keyword_switched', `切换搜索关键词: ${keyword}`, 'script', 'info', {
                         keyword,
                         index: currentTagIdx,
+                        wrapped: currentTagIdx === 0,
                         reason,
                     });
                     setSearchAction(`搜索关键词: ${keyword}`);
@@ -1388,9 +1363,12 @@
                         return true;
                     }
                 }
-                logger.add('所有岗位关键词已处理完毕');
-                await api.event('all_keywords_finished', '所有岗位关键词已处理完毕', 'script', 'info');
-                await api.heartbeat('search', 'idle', '所有岗位关键词已处理完毕');
+                logger.add('所有关键词本轮未发现新职位，稍后从第一个关键词重新开始');
+                await api.event('all_keywords_no_new_jobs', '所有关键词本轮未发现新职位，稍后从第一个关键词重新开始', 'script', 'info', {
+                    tags: this.tags,
+                    seenCount: seenJobHrefs.size,
+                    reason,
+                });
                 return false;
             };
 
@@ -1754,6 +1732,8 @@
                             setTimeout(loop, 0);
                             return;
                         }
+                        await api.heartbeat('search', 'running', '所有关键词暂无新职位，稍后重新轮询');
+                        setTimeout(loop, OPTIONS.actionDelayMs);
                         return;
                     }
                     // 抽取第一个
@@ -1904,8 +1884,9 @@
                         if (hasNextKeyword) {
                             loop();
                         } else {
-                            logger.add('搜索后没有读取到职位列表');
-                            await api.heartbeat('search', 'idle', '所有岗位关键词均未读取到新职位');
+                            logger.add('所有关键词暂无新职位，稍后重新轮询');
+                            await api.heartbeat('search', 'running', '所有关键词暂无新职位，稍后重新轮询');
+                            setTimeout(loop, OPTIONS.actionDelayMs);
                         }
                         return;
                     }
