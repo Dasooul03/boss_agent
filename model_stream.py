@@ -348,6 +348,13 @@ def parse_job_score_block(content: str) -> str | None:
     text = visible_model_text(content)
     if not text:
         return None
+
+    # 优先尝试解析 JSON 格式（支持流式输出中的不完整 JSON）
+    json_result = _parse_json_score(text)
+    if json_result:
+        return json_result
+
+    # 回退到正则解析三行格式
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) != 3:
         return None
@@ -359,7 +366,66 @@ def parse_job_score_block(content: str) -> str | None:
         if not match or match.group(1) != expected_order[index]:
             return None
         normalized.append(f"{match.group(1)}: {match.group(2)}")
+
+    # 检查第三行是否完整输出，防止流式截断
+    # 找到第三行在原始text中的起始位置，检查后面是否还有非空白字符
+    third_line = lines[2]
+    third_line_start = text.find(third_line)
+    if third_line_start != -1:
+        after_third_line = text[third_line_start + len(third_line):]
+        # 如果第三行后面还有非空白字符，说明内容还在继续输出，不视为完整
+        if after_third_line.strip():
+            return None
+
     return "\n".join(normalized)
+
+
+def _parse_json_score(text: str) -> str | None:
+    """尝试从文本中解析 JSON 格式的岗位评分"""
+    # 查找 JSON 对象开始位置
+    json_start = text.find("{")
+    if json_start == -1:
+        return None
+
+    # 从找到的 { 位置开始提取内容
+    json_text = text[json_start:]
+
+    # 检查是否包含完整的 JSON 对象（以 } 结尾）
+    if "}" not in json_text:
+        return None
+
+    # 找到最后一个 } 的位置，确保是 JSON 对象的结束
+    last_brace = json_text.rfind("}")
+    if last_brace == -1:
+        return None
+
+    # 截取到最后一个 } 的内容
+    json_text = json_text[:last_brace + 1]
+
+    # 检查 JSON 对象后面是否还有非空白字符，防止截断不完整
+    after_json = text[json_start + last_brace + 1:]
+    if after_json.strip():
+        return None
+
+    # 尝试解析 JSON
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        return None
+
+    # 验证 JSON 内容格式
+    required_keys = ["学历专业", "技术栈", "项目经验"]
+    if not all(key in data for key in required_keys):
+        return None
+
+    # 验证分数范围和类型
+    for key in required_keys:
+        value = data[key]
+        if not isinstance(value, int) or not (0 <= value <= 100):
+            return None
+
+    # 转换为标准输出格式
+    return f"学历专业: {data['学历专业']}\n技术栈: {data['技术栈']}\n项目经验: {data['项目经验']}"
 
 
 def compact_model_text(value: str, limit: int = 120) -> str:
