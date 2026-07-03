@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -263,6 +264,23 @@ def list_history(limit: int = 100, offset: int = 0) -> dict[str, Any]:
         "jobs": [row_to_dict(row) for row in jobs],
         "actions": [row_to_dict(row) for row in actions],
     }
+
+
+def list_recent_processed_jobs(limit: int = 500, hours: int = 24) -> list[dict[str, Any]]:
+    init_db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, hours))).isoformat()
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            """
+            SELECT url, title, company, recommendation, final_action, greeted, updated_at, error
+            FROM jobs
+            WHERE url != '' AND updated_at >= ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (cutoff, limit),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
 
 
 def create_event(event: dict[str, Any]) -> dict[str, Any]:

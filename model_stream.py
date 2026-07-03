@@ -20,6 +20,7 @@ DEFAULT_MODEL_OPTIONS = {
 }
 
 MODEL_CALL_TIMEOUT_SECONDS = 180
+JOB_SCORE_TIMEOUT_SECONDS = 75
 MODEL_MAX_RETRIES = 3
 
 JOB_SCORE_EARLY_STOP_LABELS = {"计算职位匹配度"}
@@ -577,6 +578,7 @@ def stream_ollama_chat(
     total_attempts = MODEL_MAX_RETRIES + 1
     base_options = configured_model_options(options)
     early_stop = early_stop or ("job_score" if label in JOB_SCORE_EARLY_STOP_LABELS else None)
+    timeout_seconds = JOB_SCORE_TIMEOUT_SECONDS if early_stop == "job_score" else MODEL_CALL_TIMEOUT_SECONDS
 
     def start_worker(
         result_queue: queue.Queue[tuple[str, Any]],
@@ -614,7 +616,7 @@ def stream_ollama_chat(
                     "model": selected_model,
                     "attempt": attempt,
                     "max_retries": MODEL_MAX_RETRIES,
-                    "timeout_seconds": MODEL_CALL_TIMEOUT_SECONDS,
+                    "timeout_seconds": timeout_seconds,
                     "error": str(error or ""),
                 },
             )
@@ -675,11 +677,11 @@ def stream_ollama_chat(
 
         while True:
             seconds = int(time.monotonic() - started_at)
-            if seconds >= MODEL_CALL_TIMEOUT_SECONDS:
+            if seconds >= timeout_seconds:
                 stop_event.set()
                 printer.flush()
                 print("", flush=True)
-                last_error = TimeoutError(f"{label} 超过 {MODEL_CALL_TIMEOUT_SECONDS} 秒未完成")
+                last_error = TimeoutError(f"{label} 超过 {timeout_seconds} 秒未完成")
                 runtime_state.emit(
                     "model_timeout",
                     f"模型调用超时: {label}",
@@ -691,7 +693,7 @@ def stream_ollama_chat(
                         "model": selected_model,
                         "attempt": attempt,
                         "max_retries": MODEL_MAX_RETRIES,
-                        "timeout_seconds": MODEL_CALL_TIMEOUT_SECONDS,
+                        "timeout_seconds": timeout_seconds,
                     },
                 )
                 retry_message("超时", attempt, last_error)
@@ -777,7 +779,7 @@ def stream_ollama_chat(
             "provider": Config.model_provider,
             "model": selected_model,
             "max_retries": MODEL_MAX_RETRIES,
-            "timeout_seconds": MODEL_CALL_TIMEOUT_SECONDS,
+            "timeout_seconds": timeout_seconds,
             "error": str(last_error or ""),
         },
     )

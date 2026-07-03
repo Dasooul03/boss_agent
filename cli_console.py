@@ -17,7 +17,6 @@ from urllib.request import urlopen
 import database
 import greeting_service
 import resume_service
-from agent_service import diagnose_payload
 from cache import cache
 from config import CONFIG_WAS_MISSING, Config
 from runtime_state import runtime_state
@@ -493,6 +492,13 @@ def show_startup_next_steps() -> None:
     print("  3. 输入 start，确认本轮岗位标签和本次打招呼上限后开始")
 
 
+def show_autorun_next_steps() -> None:
+    print("\n[启动] 自动运行模式")
+    print(f"  1. 已尝试打开油猴脚本安装/更新页: {script_install_url()}")
+    print("  2. 已尝试打开 BOSS 搜索页")
+    print("  3. 等待油猴脚本心跳，脚本在线后自动开始运行")
+
+
 def maybe_open_startup_pages() -> None:
     enabled = str(os.environ.get("JOB_SEEKER_AUTO_OPEN", "")).strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
@@ -508,6 +514,16 @@ def maybe_open_startup_pages() -> None:
         except Exception as exc:
             print(f"[启动] 自动打开失败: {url} / {exc}")
     print("[启动] 已尝试打开油猴脚本安装/更新页和 BOSS 搜索页。")
+
+
+def wait_for_script_ready(timeout_seconds: float = 120.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        script = runtime_state.script_snapshot()
+        if script.get("connected"):
+            return True
+        time.sleep(1)
+    return False
 
 
 def read_script_versions() -> tuple[str, str]:
@@ -546,23 +562,22 @@ def show_status() -> None:
         print(f"- 脚本版本: {detail.get('version')}")
     if detail.get("sessionGreetLimit") is not None:
         print(f"- 本轮打招呼: {detail.get('sessionGreetCount', 0)} / {detail.get('sessionGreetLimit')}")
+        print(f"- 运行标识: 后端 {status['backend'].get('run_id')} / 脚本 {detail.get('localSessionRunId') or detail.get('runId') or '-'}")
+        print(f"- 脚本后端标识: {detail.get('backendRunId') or '-'} / sessionEnded={detail.get('sessionEnded')}")
     if not script.get("connected"):
         print("- 提示: 请打开或刷新 BOSS 搜索页，并确认油猴脚本已启用。")
     print(f"- 控制: {status['backend']['control']}")
     model_status = status["ollama"]
     print(f"- 模型服务状态: {'可用' if model_status.get('available') else '不可用'}")
-    agent = diagnose_payload()
-    if not agent.get("ready"):
-        print(f"- Agent 卡点: {', '.join(agent.get('missing_requirements') or []) or agent.get('last_error') or '未知'}")
-        print(f"- Agent 建议: {agent.get('suggested_command')}")
 
 
 def show_control_result(command: str) -> None:
     global SESSION_PREPARED
-    if command == "resume" and (not SESSION_PREPARED or runtime_state.control == "stopped"):
+    new_run = command == "resume" and (not SESSION_PREPARED or runtime_state.control == "stopped")
+    if new_run:
         if not prepare_session_start(force=True):
             return
-    runtime_state.set_control(command)
+    runtime_state.set_control(command, new_run=new_run)
     if command == "stop":
         SESSION_PREPARED = False
     payload = runtime_state.control_payload()
@@ -678,6 +693,17 @@ def show_doctor() -> None:
     detail = script.get("detail") or {}
     if detail.get("version"):
         print(f"  版本/阈值: {detail.get('version')} / {detail.get('threshold') or '-'}")
+    if detail:
+        print(
+            f"  运行标识: 后端 {runtime_state.run_id} / "
+            f"脚本 {detail.get('localSessionRunId') or detail.get('runId') or '-'} / "
+            f"脚本后端 {detail.get('backendRunId') or '-'}"
+        )
+        print(
+            f"  本轮计数: {detail.get('sessionGreetCount', 0)} / "
+            f"{detail.get('sessionGreetLimit') or Config.session_greet_limit} / "
+            f"ended={detail.get('sessionEnded')}"
+        )
     if script.get("stale"):
         print("- 建议: 刷新 BOSS 搜索页，等待 CLI 出现新的脚本心跳后再输入 start。")
     elif not script.get("connected"):
@@ -688,11 +714,79 @@ def show_doctor() -> None:
     print(f"- 简历画像: {'已生成' if cache.cache_status()['profile_generated'] else '未生成'}")
     print(f"- 用户详情: {'已确认' if cache.user_detail.strip() else '未确认'}")
     print(f"- 打招呼话术: {'已确认' if greeting.get('confirmed') else '未确认'}")
-    agent = diagnose_payload()
-    print(f"- Agent 就绪: {'是' if agent.get('ready') else '否'}")
-    if not agent.get("ready"):
-        print(f"  卡点: {', '.join(agent.get('missing_requirements') or []) or agent.get('last_error') or '未知'}")
-        print(f"  建议: {agent.get('suggested_command')}")
+
+
+def model_ready_for_autorun() -> bool:
+    status = runtime_state.ollama_status()
+    if Config.model_provider == "openai" and not Config.openai_api_key:
+        print("[模型] OpenAI API Key 未配置，请先运行人工启动器 config。")
+        return False
+    if not status.get("available"):
+        print(f"[模型] 模型服务不可用: {status.get('error') or '未知错误'}")
+        return False
+    if Config.model_provider == "ollama" and not status.get("model_available", True):
+        print(f"[模型] 当前模型不在 Ollama 模型列表中: {Config.think_model}")
+        return False
+    return True
+
+
+def auto_prepare_saved_configuration() -> bool:
+    cache.load()
+    if not cache.resume.strip():
+        print("[配置] 未找到已保存简历。请先运行 start_job_seeker.bat 完成人工配置。")
+        runtime_state.emit("autorun_blocked", "未找到已保存简历，自动运行已暂停", source="startup", level="error")
+        return False
+    if not model_ready_for_autorun():
+        runtime_state.emit("autorun_blocked", "模型配置不可用，自动运行已暂停", source="startup", level="error")
+        return False
+
+    status = cache.cache_status()
+    if not status["profile_generated"]:
+        print("[配置] 缺少画像/标签/用户详情，正在用已配置模型自动生成...")
+        try:
+            profile = cache.generate_profile()
+            if not profile.get("tags") or not profile.get("user_detail"):
+                raise ValueError("模型未生成有效画像、标签或用户详情")
+        except Exception as exc:
+            print(f"[配置] 自动生成画像失败: {exc}")
+            runtime_state.emit("autorun_blocked", f"自动生成画像失败: {exc}", source="startup", level="error")
+            return False
+
+    greeting = greeting_service.get_greeting()
+    if not greeting.get("confirmed"):
+        print("[配置] 缺少打招呼话术，正在用已配置模型自动生成...")
+        try:
+            draft = greeting_service.generate_greeting("自动运行")
+            greeting_service.save_greeting(draft["content"], "自动运行生成话术")
+        except Exception as exc:
+            print(f"[配置] 自动生成打招呼话术失败: {exc}")
+            runtime_state.emit("autorun_blocked", f"自动生成打招呼话术失败: {exc}", source="startup", level="error")
+            return False
+
+    cache.load()
+    if not cache.tags:
+        print("[配置] 岗位标签为空。请先运行人工启动器 tags。")
+        runtime_state.emit("autorun_blocked", "岗位标签为空，自动运行已暂停", source="startup", level="error")
+        return False
+    runtime_state.emit(
+        "autorun_config_ready",
+        f"自动运行配置就绪: 标签 {len(cache.tags)} 个 / 本次上限 {Config.session_greet_limit}",
+        source="startup",
+        detail={"tags": cache.tags, "session_greet_limit": Config.session_greet_limit},
+    )
+    print(f"[配置] 自动运行将使用岗位标签: {'、'.join(cache.tags)}")
+    print(f"[配置] 本次最多打招呼数量: {Config.session_greet_limit}")
+    return True
+
+
+def keep_process_alive() -> None:
+    print("\n[运行] 自动运行中。关闭窗口或按 Ctrl+C 可停止本地服务。")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        runtime_state.set_control("stop")
+        runtime_state.emit("autorun_exit", "自动运行已由用户中断", source="startup")
 
 
 def show_help() -> None:
@@ -769,3 +863,28 @@ def run_cli(app) -> None:
     maybe_open_startup_pages()
     show_startup_next_steps()
     command_loop()
+
+
+def run_autorun(app) -> int:
+    database.init_db()
+    cache.load()
+    start_event_printer()
+    runtime_state.emit("autorun_start", "Job Seeker 自动运行启动", source="startup")
+    if not auto_prepare_saved_configuration():
+        runtime_state.set_control("pause")
+        print("[启动] 自动运行未开始。请使用人工启动器处理上述问题。")
+        return 1
+    start_api_server(app)
+    os.environ.setdefault("JOB_SEEKER_AUTO_OPEN", "1")
+    os.environ.setdefault("JOB_SEEKER_BOSS_URL", BOSS_SEARCH_URL)
+    maybe_open_startup_pages()
+    show_autorun_next_steps()
+    print("[脚本] 等待油猴脚本连接，最长等待 120 秒...")
+    if not wait_for_script_ready(120):
+        runtime_state.set_control("pause")
+        print("[脚本] 油猴脚本未连接。请确认已安装/启用脚本、BOSS 已登录，并刷新搜索页。")
+        return 2
+    runtime_state.set_control("resume", new_run=True)
+    print("[控制] 脚本已连接，自动化已开始运行。")
+    keep_process_alive()
+    return 0

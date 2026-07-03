@@ -33,11 +33,15 @@
         sessionGreetLimit: 50, // 本次打招呼上限，后端配置会覆盖这里。
         actionDelayMs: 2500, // 页面动作之间的保守等待时间。
         manualInterventionMaxRetries: 3, // 人工校验自动恢复次数，连续失败后暂停。
+        searchLeaseMs: 12000, // 搜索页运行租约，防止多个搜索页同时自动化。
+        openCooldownMs: 45000, // 同一 URL 短时间内不重复打开。
+        recentProcessedHours: 24, // 后端近期已处理职位去重窗口。
     };
 
     let backendOfflineNotified = false;
     let backendOfflineFailures = 0;
     const BACKEND_OFFLINE_NOTIFY_THRESHOLD = 2;
+    const PAGE_INSTANCE_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
     function applyBackendConfig(config) {
         if (!config) return;
@@ -316,10 +320,42 @@
             const jitter = Math.floor(Math.random() * 1200);
             return this.asyncSleep(baseMs + jitter);
         },
+        readJson(key, fallback = {}) {
+            try {
+                return JSON.parse(localStorage.getItem(key) || '') || fallback;
+            } catch (e) {
+                return fallback;
+            }
+        },
+        writeJson(key, value) {
+            localStorage.setItem(key, JSON.stringify(value));
+        },
         getTimestamp(key) {
             return Number(localStorage.getItem(key));
         },
-        openTabNSetTimestamp(href, key, self = false) {
+        openCooldownKey(key, href) {
+            return `__job_seeker_open_cooldown:${key}:${this.normalUrl(href) || href}`;
+        },
+        canOpenUrl(href, key, cooldownMs = OPTIONS.openCooldownMs) {
+            const cooldownKey = this.openCooldownKey(key, href);
+            const previous = Number(localStorage.getItem(cooldownKey) || 0);
+            return !previous || Date.now() - previous > cooldownMs;
+        },
+        markOpenUrl(href, key) {
+            localStorage.setItem(this.openCooldownKey(key, href), String(Date.now()));
+        },
+        closeTabHandle(handle) {
+            try {
+                if (handle && typeof handle.close === 'function') {
+                    handle.close();
+                    return true;
+                }
+            } catch (e) {
+                return false;
+            }
+            return false;
+        },
+        openTabNSetTimestamp(href, key, self = false, options = {}) {
             localStorage.setItem(key, new Date().getTime());
 
             // 当前页跳转：用于回到搜索页等场景，保持原页面内跳转。
@@ -327,6 +363,10 @@
                 location.href = href;
                 return true;
             }
+            if (!options.force && !this.canOpenUrl(href, key, options.cooldownMs || OPTIONS.openCooldownMs)) {
+                return null;
+            }
+            this.markOpenUrl(href, key);
 
             // 优先使用 Tampermonkey 后台打开，避免新标签页抢占当前页面焦点。
             if (typeof GM_openInTab === 'function') {
@@ -403,17 +443,19 @@
                 const value = JSON.parse(localStorage.getItem(this.sessionStateKey) || '{}');
                 return {
                     runId: String(value.runId || ''),
+                    backendRunId: String(value.backendRunId || ''),
                     count: Number(value.count || 0),
                     startedAt: String(value.startedAt || ''),
                     ended: Boolean(value.ended),
                 };
             } catch (e) {
-                return { runId: '', count: 0, startedAt: '', ended: true };
+                return { runId: '', backendRunId: '', count: 0, startedAt: '', ended: true };
             }
         },
         saveGreetSession(session) {
             const state = {
                 runId: String(session.runId || ''),
+                backendRunId: String(session.backendRunId || ''),
                 count: Math.max(0, Number(session.count || 0)),
                 startedAt: String(session.startedAt || new Date().toISOString()),
                 ended: Boolean(session.ended),
@@ -421,13 +463,14 @@
             localStorage.setItem(this.sessionStateKey, JSON.stringify(state));
             return state;
         },
-        startGreetSession(force = false) {
+        startGreetSession(force = false, backendRunId = '') {
             const current = this.getGreetSession();
-            if (!force && current.runId && !current.ended) {
+            if (!force && current.runId && !current.ended && (!backendRunId || current.backendRunId === backendRunId)) {
                 return current;
             }
             return this.saveGreetSession({
                 runId: `run_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+                backendRunId,
                 count: 0,
                 startedAt: new Date().toISOString(),
                 ended: false,
@@ -844,6 +887,12 @@
             }).catch(reject));
         }
 
+        getRecentJobs() {
+            return this.__http(`/jobs/recent?limit=800&hours=${OPTIONS.recentProcessedHours}`)
+                .then(res => Array.isArray(res.jobs) ? res.jobs : [])
+                .catch(() => []);
+        }
+
         /**
          * 上报脚本状态
          */
@@ -1096,6 +1145,7 @@
             let jobHrefs = [];
             let elsLen = 0;
             const seenJobHrefs = new Set();
+            const backendProcessedHrefs = new Set();
             let lastJobListEventKey = '';
             // 缓存
             let started = false;
@@ -1105,6 +1155,11 @@
             let greetTimeoutId = null;
             let currentSearchAction = '等待启动';
             let lastBackendControl = 'paused';
+            let lastBackendRunId = '';
+            let hasSearchLease = false;
+            let leaseTimer = null;
+            let activeTempTab = null;
+            const searchLeaseKey = '__job_seeker_search_lease';
             const manualRecoveryStateKey = '__job_seeker_manual_recovery';
             let manualInterventionRetryCount = 0;
             const pageFailureStateKey = '__job_seeker_page_failure_recovery';
@@ -1168,13 +1223,19 @@
                 pageFailureRetryCount = Math.max(0, Number(loadedPageFailure.retryCount));
             }
 
-            const scriptHeartbeatDetail = () => ({
-                version: OPTIONS.scriptVersion,
-                threshold: OPTIONS.thread,
-                sessionGreetLimit: OPTIONS.sessionGreetLimit,
-                sessionGreetCount: tools.getSessionGreetCount(),
-                runId: tools.getGreetSession().runId,
-            });
+            const scriptHeartbeatDetail = () => {
+                const session = tools.getGreetSession();
+                return {
+                    version: OPTIONS.scriptVersion,
+                    threshold: OPTIONS.thread,
+                    sessionGreetLimit: OPTIONS.sessionGreetLimit,
+                    sessionGreetCount: session.count,
+                    runId: session.runId,
+                    localSessionRunId: session.runId,
+                    backendRunId: session.backendRunId || lastBackendRunId,
+                    sessionEnded: Boolean(session.ended),
+                };
+            };
 
             const setSearchAction = (action) => {
                 currentSearchAction = action || (started ? '搜索/浏览职位' : '等待启动');
@@ -1185,11 +1246,81 @@
                 return currentSearchAction || (started ? '搜索/浏览职位' : '等待启动');
             };
 
+            const readSearchLease = () => tools.readJson(searchLeaseKey, {});
+
+            const writeSearchLease = () => {
+                hasSearchLease = true;
+                tools.writeJson(searchLeaseKey, {
+                    owner: PAGE_INSTANCE_ID,
+                    updatedAt: Date.now(),
+                    url: location.href,
+                });
+            };
+
+            const acquireSearchLease = () => {
+                const lease = readSearchLease();
+                const expired = !lease.updatedAt || Date.now() - Number(lease.updatedAt) > OPTIONS.searchLeaseMs;
+                if (lease.owner && lease.owner !== PAGE_INSTANCE_ID && !expired) {
+                    hasSearchLease = false;
+                    return false;
+                }
+                writeSearchLease();
+                if (!leaseTimer) {
+                    leaseTimer = setInterval(() => {
+                        if (!hasSearchLease) return;
+                        writeSearchLease();
+                    }, Math.max(3000, Math.floor(OPTIONS.searchLeaseMs / 3)));
+                }
+                return true;
+            };
+
+            const releaseSearchLease = () => {
+                closeActiveTempTab();
+                const lease = readSearchLease();
+                if (lease.owner === PAGE_INSTANCE_ID) {
+                    localStorage.removeItem(searchLeaseKey);
+                }
+                hasSearchLease = false;
+                if (leaseTimer) {
+                    clearInterval(leaseTimer);
+                    leaseTimer = null;
+                }
+            };
+
+            const rememberTempTab = (handle) => {
+                if (handle && handle !== true) {
+                    activeTempTab = handle;
+                }
+            };
+
+            const closeActiveTempTab = () => {
+                if (activeTempTab) {
+                    tools.closeTabHandle(activeTempTab);
+                    activeTempTab = null;
+                }
+            };
+
+            const ensureSearchLease = async (label = '运行检查') => {
+                if (acquireSearchLease()) return true;
+                setSearchAction('其他搜索页正在运行，本页待命');
+                await api.heartbeat('search_standby', 'idle', `${label}: 其他搜索页正在运行`, {
+                    ...scriptHeartbeatDetail(),
+                    pageInstanceId: PAGE_INSTANCE_ID,
+                    lease: readSearchLease(),
+                });
+                return false;
+            };
+
+            window.addEventListener('beforeunload', releaseSearchLease);
+
             // 日志启动暂停事件
             const logger = new Logger(async () => {
                 const res = await api.heartbeat('search', this.pause ? 'paused' : 'idle', '等待 CLI start', scriptHeartbeatDetail());
                 applyBackendConfig(res.config);
+                lastBackendRunId = res.run_id || lastBackendRunId;
                 if (res.control === 'running' || res.should_start) {
+                    if (!(await ensureSearchLease('手动启动'))) return;
+                    await ensureSessionForBackendRun(lastBackendRunId, 'manual_start');
                     this.pause = false;
                     logger.setPaused(false);
                     started ? loop() : main();
@@ -1227,12 +1358,35 @@
             };
 
             const beginGreetSession = (reason = '') => {
-                const session = tools.startGreetSession(true);
+                const session = tools.startGreetSession(true, lastBackendRunId);
                 resetProgress();
                 if (reason) {
                     logger.add(`本轮打招呼计数已重置: ${reason}`);
                 }
                 return session;
+            };
+
+            const ensureSessionForBackendRun = async (backendRunId, reason = '') => {
+                if (!backendRunId) return tools.getGreetSession();
+                const session = tools.getGreetSession();
+                const legacyOrDifferentRun = !session.backendRunId || session.backendRunId !== backendRunId;
+                if (!legacyOrDifferentRun && session.runId && !session.ended) {
+                    return session;
+                }
+                const previous = { ...session };
+                const next = tools.startGreetSession(true, backendRunId);
+                resetProgress();
+                const message = `本轮计数已按后端运行重置: ${previous.count || 0} -> 0`;
+                logger.add(message);
+                await api.event('session_counter_reset', message, 'script', 'info', {
+                    reason: reason || 'backend_run_changed',
+                    previousRunId: previous.runId || '',
+                    previousBackendRunId: previous.backendRunId || '',
+                    backendRunId,
+                    previousCount: previous.count || 0,
+                    newRunId: next.runId,
+                });
+                return next;
             };
 
             const isSessionLimitReached = () => (
@@ -1301,6 +1455,7 @@
                     scriptHeartbeatDetail()
                 );
                 applyBackendConfig(res.config);
+                lastBackendRunId = res.run_id || lastBackendRunId;
                 const previousControl = lastBackendControl;
                 lastBackendControl = res.control || lastBackendControl;
                 if (res.offline) {
@@ -1313,17 +1468,20 @@
                 if (res.should_stop || res.control === 'stopped') {
                     if (!this.pause) logger.add('CLI 已停止自动化');
                     tools.endGreetSession();
+                    releaseSearchLease();
                     logger.setPaused(true);
                     this.pause = true;
                     return false;
                 }
                 if (res.should_pause || res.control === 'paused') {
                     if (!this.pause) logger.add('CLI 已暂停自动化');
+                    releaseSearchLease();
                     logger.setPaused(true);
                     this.pause = true;
                     return false;
                 }
                 if (res.should_start || res.control === 'running') {
+                    await ensureSessionForBackendRun(lastBackendRunId, previousControl === 'stopped' ? 'stopped_to_running' : 'backend_running');
                     const session = tools.getGreetSession();
                     if (!session.runId || session.ended || previousControl === 'stopped') {
                         beginGreetSession(previousControl === 'stopped' ? '停止后重新开始' : '开始新一轮');
@@ -1338,6 +1496,7 @@
 
             setInterval(async () => {
                 if (await syncControlFromBackend()) {
+                    if (!(await ensureSearchLease('定时运行检查'))) return;
                     if (!started && !booting) {
                         main();
                     } else if (started && !booting && !waitingForGreeting) {
@@ -1365,6 +1524,7 @@
                     clearTimeout(greetTimeoutId);
                     greetTimeoutId = null;
                 }
+                closeActiveTempTab();
             };
 
             const resetManualInterventionRecovery = async (label = '') => {
@@ -1615,12 +1775,12 @@
                         );
                     };
                     let hrefs = collect();
-                    let newHrefs = hrefs.filter(href => !seenJobHrefs.has(href));
+                    let newHrefs = hrefs.filter(href => !seenJobHrefs.has(href) && !backendProcessedHrefs.has(href));
                     const startedAt = Date.now();
                     while (!newHrefs.length && hrefs.length <= elsLen && Date.now() - startedAt < 5000) {
                         await tools.asyncSleep(500);
                         hrefs = collect();
-                        newHrefs = hrefs.filter(href => !seenJobHrefs.has(href));
+                        newHrefs = hrefs.filter(href => !seenJobHrefs.has(href) && !backendProcessedHrefs.has(href));
                     }
                     const eventKey = `${hrefs.length}:${newHrefs.length}:${hrefs[hrefs.length - 1] || ''}`;
                     if (eventKey !== lastJobListEventKey) {
@@ -1710,6 +1870,7 @@
                 await api.event('job_detail_opened', `打开职位详情: ${href}`, 'script', 'info', { url: href });
                 const detailResponse = this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO, OPTIONS.jobInfoResponseTimeout);
                 const opened = tools.openTabNSetTimestamp(href, this.targets.detail);
+                rememberTempTab(opened);
                 setSearchAction(`等待详情页回传职位信息: ${href}`);
                 await api.heartbeat('search', 'running', `等待详情页回传职位信息: ${href}`, {
                     ...scriptHeartbeatDetail(),
@@ -1747,6 +1908,7 @@
                 if (!info || !info.title || !info.detail) {
                     throw new Error('职位详情缺少标题或描述');
                 }
+                closeActiveTempTab();
                 await api.event('job_detail_received', `已读取职位详情: ${info.title}`, 'script', 'info', info);
                 return info;
             };
@@ -1822,6 +1984,7 @@
                 try {
                     return await getJobInfo(href);
                 } catch (firstError) {
+                    closeActiveTempTab();
                     if (tools.isPlatformLimitError(firstError) || tools.isElementMissingError(firstError)) {
                         await api.event(
                             tools.isPlatformLimitError(firstError) ? 'job_detail_platform_limit' : 'job_detail_element_missing',
@@ -1847,6 +2010,7 @@
                     try {
                         return await getJobInfo(href);
                     } catch (secondError) {
+                        closeActiveTempTab();
                         if (tools.isPlatformLimitError(secondError) || tools.isElementMissingError(secondError)) {
                             await api.event(
                                 tools.isPlatformLimitError(secondError) ? 'job_detail_platform_limit' : 'job_detail_element_missing',
@@ -1917,6 +2081,7 @@
                     reason,
                 });
                 const opened = tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet);
+                rememberTempTab(opened);
                 if (!opened) {
                     finishGreetingWait();
                     throw new Error('浏览器拦截了聊天页弹窗，请允许 zhipin.com 弹出窗口后重试');
@@ -2118,6 +2283,7 @@
                 if (loopRunning) return;
                 loopRunning = true;
                 try {
+                    if (!(await ensureSearchLease('循环运行'))) return;
                     if (waitingForGreeting) return;
                     const platformLimit = tools.detectPlatformLimit();
                     if (platformLimit) {
@@ -2272,6 +2438,7 @@
             const main = async () => {
                 try {
                     if (booting || started) return;
+                    if (!(await ensureSearchLease('启动自动化'))) return;
                     booting = true;
                     started = true;
                     resetProgress();
@@ -2280,7 +2447,10 @@
                     }
                     setSearchAction('程序启动，读取配置');
                     logger.add('--程序启动--');
-                    await api.heartbeat('search', 'running', '程序启动');
+                    const bootStatus = await api.heartbeat('search', 'running', '程序启动', scriptHeartbeatDetail());
+                    applyBackendConfig(bootStatus.config);
+                    lastBackendRunId = bootStatus.run_id || lastBackendRunId;
+                    await ensureSessionForBackendRun(lastBackendRunId, 'program_start');
                     // 开始广播
                     startBroadcast();
                     // 获取标签
@@ -2292,6 +2462,18 @@
                         return;
                     }
                     logger.add('获取标签成功: ' + this.tags.join('、'));
+                    const recentJobs = await api.getRecentJobs();
+                    backendProcessedHrefs.clear();
+                    for (const item of recentJobs) {
+                        const href = tools.normalUrl(item.url || '');
+                        if (href) backendProcessedHrefs.add(href);
+                    }
+                    if (backendProcessedHrefs.size) {
+                        await api.event('recent_jobs_loaded', `已加载近期处理职位 ${backendProcessedHrefs.size} 个`, 'script', 'info', {
+                            count: backendProcessedHrefs.size,
+                            hours: OPTIONS.recentProcessedHours,
+                        });
+                    }
                     // 获取自我介绍
                     setSearchAction('读取已确认打招呼用语');
                     this.introduce = await api.getIntroduce();
@@ -2348,6 +2530,7 @@
             const init = async () => {
                 const res = await api.heartbeat('search', 'idle', '等待 CLI start', scriptHeartbeatDetail());
                 applyBackendConfig(res.config);
+                lastBackendRunId = res.run_id || lastBackendRunId;
                 lastBackendControl = res.control || lastBackendControl;
                 if (res.offline) {
                     noteBackendOffline('后端未连接：请先运行 python main.py，并确认油猴脚本允许连接 127.0.0.1');
@@ -2363,6 +2546,8 @@
                 });
                 logger.add('等待 CLI 输入 start 开始自动化');
                 if (res.should_start || res.control === 'running') {
+                    if (!(await ensureSearchLease('初始化自动继续'))) return;
+                    await ensureSessionForBackendRun(lastBackendRunId, 'init_running');
                     if (!tools.getGreetSession().runId || tools.getGreetSession().ended) {
                         beginGreetSession('开始新一轮');
                     }
@@ -2373,6 +2558,8 @@
                 }
                 // 从其他页面跳回搜索页时，仍然尊重 CLI 控制状态。
                 if (searchPageOpenedAt - tools.getTimestamp(this.targets.search) < OPTIONS.timestampTimeout && res.control !== 'paused') {
+                    if (!(await ensureSearchLease('搜索页恢复'))) return;
+                    await ensureSessionForBackendRun(lastBackendRunId, 'search_page_restore');
                     this.pause = false;
                     main();
                 }

@@ -15,17 +15,17 @@ $BossUrl = "https://www.zhipin.com/web/geek/job"
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "[Job Seeker] $Message" -ForegroundColor Cyan
+    Write-Host "[Job Seeker Auto] $Message" -ForegroundColor Cyan
 }
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "[Job Seeker] $Message" -ForegroundColor Yellow
+    Write-Host "[Job Seeker Auto] $Message" -ForegroundColor Yellow
 }
 
 function Write-Fail {
     param([string]$Message)
-    Write-Host "[Job Seeker] $Message" -ForegroundColor Red
+    Write-Host "[Job Seeker Auto] $Message" -ForegroundColor Red
 }
 
 function Pause-And-Exit {
@@ -91,6 +91,9 @@ function Test-OllamaAvailable {
 
 function Open-StartupPages {
     param([int]$Port)
+    if ($NoOpen) {
+        return
+    }
     $scriptUrl = "http://127.0.0.1:${Port}/web_script.user.js"
     Write-Info "Opening userscript install/update page: $scriptUrl"
     Start-Process $scriptUrl | Out-Null
@@ -119,7 +122,6 @@ if (Test-Path -LiteralPath $venvPython) {
     }
     $pythonExe = $pythonCommand.Source
     Write-Warn ".venv was not found. Using system Python: $pythonExe"
-    Write-Warn "Recommended setup: python -m venv .venv; .\.venv\Scripts\activate; pip install -r requirements.txt"
 }
 
 Write-Info "Checking Python dependencies..."
@@ -146,35 +148,27 @@ $openaiKey = [string](Get-ConfigValue $config "openai_api_key" "")
 
 if (Test-TcpPort $port) {
     if (Test-JobSeekerHealth $port) {
-        Write-Warn "Job Seeker is already running on port $port. This launcher will not start another backend."
-        if (-not $NoOpen) {
-            Open-StartupPages $port
-        }
+        Write-Warn "Job Seeker is already running on port $port. This auto launcher will not start another backend."
+        Open-StartupPages $port
+        Write-Warn "If the existing window is paused, use that window or restart it with this auto launcher."
         Pause-And-Exit 0
     }
     Write-Fail "Port $port is occupied by another program. Close it or change server_port in data/config.json."
     Pause-And-Exit 1
 }
 
-$ollamaAvailable = $false
 if ($provider -eq "ollama") {
-    $ollamaAvailable = Test-OllamaAvailable $ollamaHost
-}
-
-if ($provider -eq "ollama" -and $ollamaAvailable) {
-    Write-Info "Ollama is reachable: $ollamaHost"
-}
-
-if ($provider -eq "ollama" -and -not $ollamaAvailable) {
-    Write-Warn "Ollama is not reachable: $ollamaHost. The service will still start, but model calls may fail."
-}
-
-if ($provider -eq "openai" -and $openaiKey) {
-    Write-Info "OpenAI API Key is configured."
+    if (Test-OllamaAvailable $ollamaHost) {
+        Write-Info "Ollama is reachable: $ollamaHost"
+    } else {
+        Write-Fail "Ollama is not reachable: $ollamaHost. Start Ollama or run the manual launcher to configure the model."
+        Pause-And-Exit 1
+    }
 }
 
 if ($provider -eq "openai" -and -not $openaiKey) {
-    Write-Warn "Provider is OpenAI, but API Key is missing. Run config in the CLI."
+    Write-Fail "Provider is OpenAI, but API Key is missing. Run the manual launcher and configure it first."
+    Pause-And-Exit 1
 }
 
 if ($NoOpen) {
@@ -184,10 +178,10 @@ if ($NoOpen) {
 }
 $env:JOB_SEEKER_BOSS_URL = $BossUrl
 
-Write-Info "Starting Job Seeker CLI..."
-Write-Info "After the local API is ready, the userscript page and BOSS search page will open automatically."
+Write-Info "Starting Job Seeker auto-run..."
+Write-Info "This mode uses saved configuration and starts automatically after the userscript connects."
 $mainPy = Join-Path $ProjectRoot "main.py"
-& $pythonExe $mainPy
+& $pythonExe $mainPy autorun
 $exitCode = $LASTEXITCODE
 
 if ($exitCode -ne 0) {

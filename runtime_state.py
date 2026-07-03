@@ -40,6 +40,14 @@ class RuntimeState:
             "heartbeat_age_seconds": None,
             "detail": {},
         }
+        self.model_warmup = {
+            "status": "unknown",
+            "provider": "",
+            "model": "",
+            "last_checked": "",
+            "latency_seconds": None,
+            "error": "",
+        }
         self.logs: deque[dict[str, Any]] = deque(maxlen=300)
         self.events: deque[dict[str, Any]] = deque(maxlen=500)
         self._subscribers: list[Queue] = []
@@ -138,12 +146,12 @@ class RuntimeState:
             script["current_action"] = f"脚本心跳超过 {age_seconds} 秒未更新"
         return script
 
-    def set_control(self, command: str) -> None:
+    def set_control(self, command: str, *, new_run: bool = False) -> None:
         if command == "pause":
             self.control = "paused"
             self.current_task = "paused"
         elif command == "resume":
-            if self.control == "stopped" or not self.run_id:
+            if new_run or self.control == "stopped" or not self.run_id:
                 self.run_id = self._new_run_id()
             self.control = "running"
             self.current_task = "idle"
@@ -167,6 +175,24 @@ class RuntimeState:
                 "paused": "CLI 已暂停脚本执行",
                 "stopped": "CLI 已停止脚本执行",
             }.get(self.control, "未知控制状态"),
+        }
+
+    def update_model_warmup(
+        self,
+        status: str,
+        *,
+        provider: str = "",
+        model: str = "",
+        latency_seconds: float | None = None,
+        error: str = "",
+    ) -> None:
+        self.model_warmup = {
+            "status": status,
+            "provider": provider,
+            "model": model,
+            "last_checked": now_iso(),
+            "latency_seconds": latency_seconds,
+            "error": error,
         }
 
     def ollama_status(self) -> dict[str, Any]:
@@ -230,38 +256,6 @@ class RuntimeState:
             result["error"] = str(exc)
             return result
 
-    def agent_summary(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
-        script = self.script_snapshot()
-        detail = script.get("detail") or {}
-        if not resume_status.get("saved"):
-            next_action = "prepare_resume"
-        elif not cache_status.get("profile_generated"):
-            next_action = "generate_profile"
-        elif not script.get("connected"):
-            next_action = "refresh_boss_page"
-        elif self.control == "paused":
-            next_action = "start"
-        elif self.control == "stopped":
-            next_action = "start_new_session"
-        elif self.last_error:
-            next_action = "inspect_logs"
-        else:
-            next_action = "wait"
-        return {
-            "ok": True,
-            "control": self.control,
-            "run_id": self.run_id,
-            "script_online": bool(script.get("connected")),
-            "script_version": detail.get("version", ""),
-            "script_page": script.get("page", "unknown"),
-            "script_status": script.get("status", "offline"),
-            "script_action": script.get("current_action", ""),
-            "session_greet_count": detail.get("sessionGreetCount", 0),
-            "session_greet_limit": detail.get("sessionGreetLimit", Config.session_greet_limit),
-            "last_error": self.last_error,
-            "next_action": next_action,
-        }
-
     def as_dict(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
         status = {
             "backend": {
@@ -290,12 +284,12 @@ class RuntimeState:
                     "frequency_penalty": Config.model_frequency_penalty,
                     "presence_penalty": Config.model_presence_penalty,
                 },
+                "warmup": dict(self.model_warmup),
             },
             "resume": resume_status,
             "cache": cache_status,
             "script": self.script_snapshot(),
         }
-        status["agent"] = self.agent_summary(resume_status, cache_status)
         return status
 
 

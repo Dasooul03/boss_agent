@@ -157,7 +157,7 @@ def calculate_job_score(job_text: str, user_detail: str) -> tuple[dict[str, int]
             },
         ],
         model=Config.think_model,
-        options={"temperature": 0.2, "num_ctx": 4096},
+        options={"temperature": 0.2, "num_ctx": 4096, "num_predict": 160, "max_tokens": 160},
         early_stop="job_score",
     )
     reply = extract_llm_reply(content)

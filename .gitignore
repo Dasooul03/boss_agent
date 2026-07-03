@@ -8,6 +8,7 @@ resume-lock.md
 data/
 .agents/
 .codex/
+.claude/
 .venv/
 .env
 .env.*
