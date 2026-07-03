@@ -20,7 +20,7 @@ DEFAULT_MODEL_OPTIONS = {
 }
 
 MODEL_CALL_TIMEOUT_SECONDS = 180
-JOB_SCORE_TIMEOUT_SECONDS = 75
+JOB_SCORE_TIMEOUT_SECONDS = 120
 MODEL_MAX_RETRIES = 3
 
 JOB_SCORE_EARLY_STOP_LABELS = {"计算职位匹配度"}
@@ -133,10 +133,13 @@ def openai_payload_options(options: dict[str, Any] | None) -> dict[str, Any]:
         payload["frequency_penalty"] = options["frequency_penalty"]
     if "presence_penalty" in options:
         payload["presence_penalty"] = options["presence_penalty"]
-    if "num_predict" in options:
-        payload["max_tokens"] = options["num_predict"]
-    if "max_tokens" in options:
-        payload["max_tokens"] = options["max_tokens"]
+    # num_predict=-1 表示无限制（Ollama），OpenAI 不传 max_tokens 即用默认值
+    num_predict = options.get("num_predict")
+    if num_predict is not None and num_predict >= 0:
+        payload["max_tokens"] = num_predict
+    max_tokens = options.get("max_tokens")
+    if max_tokens is not None and max_tokens >= 0:
+        payload["max_tokens"] = max_tokens
     return payload
 
 
@@ -155,6 +158,24 @@ def should_disable_thinking(options: dict[str, Any] | None) -> bool:
     if "disable_thinking" in options:
         return bool(options["disable_thinking"])
     return bool(Config.disable_model_thinking)
+
+
+def ollama_think_parameter_unsupported(error_text: str) -> bool:
+    text = (error_text or "").lower()
+    if not re.search(r"(?:\bthink\b|[`'\"]think[`'\"])", text):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "400",
+            "unknown",
+            "unsupported",
+            "unrecognized",
+            "invalid",
+            "parameter",
+            "field",
+        )
+    )
 
 
 def apply_openai_thinking_control(payload: dict[str, Any], disable_thinking: bool) -> bool:
@@ -296,8 +317,11 @@ def iter_ollama_chat_chunks(
     format_schema: dict[str, Any] | None = None,
 ) -> Any:
     raw_options = dict(options or DEFAULT_MODEL_OPTIONS)
-    think = raw_options.pop("think", None)
     disable_thinking = should_disable_thinking(raw_options)
+    # 主动注入 system 消息禁止思考（prompt 级别，比 API 参数 think 更可靠）
+    if disable_thinking:
+        messages = [{"role": "system", "content": "请直接输出最终答案，不要输出任何思考过程、分析或推理。"}] + list(messages)
+    think = raw_options.pop("think", None)
     request_options = ollama_payload_options(raw_options)
     kwargs: dict[str, Any] = {
         "model": model,
@@ -327,19 +351,51 @@ def iter_ollama_chat_chunks(
                 yield "</think>"
                 reasoning_open = False
 
+    was_disabling_think = kwargs.get("think") is False
     try:
         yield from emit_chunks(kwargs)
     except RuntimeError as exc:
         error_text = str(exc).lower()
-        if "think" not in kwargs or not ("think" in error_text or "unknown" in error_text or "400" in error_text):
+        if "think" not in kwargs or not ollama_think_parameter_unsupported(error_text):
             raise
-        runtime_state.emit(
-            "model_thinking_control_retry",
-            "Ollama 不支持当前思考控制参数，已移除后重试",
-            source="model",
-        )
         kwargs.pop("think", None)
-        yield from emit_chunks(kwargs)
+        if was_disabling_think:
+            runtime_state.emit(
+                "model_thinking_control_retry",
+                "Ollama 不支持 think 参数，已通过系统提示词 + 限制生成长度来抑制思考",
+                source="model",
+                level="warn",
+                detail={"model": model, "fallback_reason": "think=False 不受支持，已启用 prompt 级抑制"},
+            )
+            if "options" in kwargs and isinstance(kwargs["options"], dict):
+                try:
+                    original = int(kwargs["options"].get("num_predict", 0))
+                except (TypeError, ValueError):
+                    original = 2048
+                if original <= 0:
+                    original = 2048
+                kwargs["options"]["num_predict"] = min(original, 400)
+        else:
+            runtime_state.emit(
+                "model_thinking_control_retry",
+                "Ollama 不支持当前思考控制参数，已移除后重试",
+                source="model",
+            )
+        try:
+            yield from emit_chunks(kwargs)
+        except RuntimeError as fallback_exc:
+            runtime_state.emit(
+                "model_thinking_control_failed",
+                "Ollama 绉婚櫎 think 鍙傛暟鍚庨噸璇曚粛澶辫触",
+                source="model",
+                level="error",
+                detail={
+                    "model": model,
+                    "original_error": str(exc),
+                    "fallback_error": str(fallback_exc),
+                },
+            )
+            raise exc from fallback_exc
 
 
 def iter_model_chunks(
@@ -458,61 +514,25 @@ def compact_model_text(value: str, limit: int = 120) -> str:
 
 
 class ModelProgressGuard:
+    """仅兜底检测最明显的无限重复：同一 chunk 连续重复 20 次以上。"""
+
     def __init__(self) -> None:
         self._last_chunk = ""
         self._same_chunk_count = 0
-        self._last_visible_length = 0
-        self._raw_since_visible_progress = 0
 
     @staticmethod
     def _normalize(value: str) -> str:
         return re.sub(r"\s+", "", value or "")
 
     def feed(self, chunk: str, content: str) -> str:
-        visible_text = visible_model_text(content)
-        visible_length = len(self._normalize(visible_text))
-        if visible_length > self._last_visible_length:
-            self._last_visible_length = visible_length
-            self._raw_since_visible_progress = 0
-        else:
-            self._raw_since_visible_progress += len(chunk or "")
-            if "<think>" in (content or "") and self._raw_since_visible_progress >= 3500:
-                return "思考段长时间无有效输出"
-
         normalized_chunk = self._normalize(chunk)
         if len(normalized_chunk) >= 8 and normalized_chunk == self._last_chunk:
             self._same_chunk_count += 1
-            if self._same_chunk_count >= 5:
+            if self._same_chunk_count >= 20:
                 return f"连续重复片段: {normalized_chunk[:40]}"
         elif normalized_chunk:
             self._last_chunk = normalized_chunk
             self._same_chunk_count = 1
-
-        analysis_text = visible_model_text(content)
-        if not analysis_text and "<think>" in (content or ""):
-            analysis_text = re.sub(r"</?think>", "", content or "")
-        text = self._normalize(analysis_text)
-        if len(text) < 120:
-            return ""
-
-        tail = text[-700:]
-        if len(tail) >= 240:
-            unique_ratio = len(set(tail)) / max(1, len(tail))
-            if unique_ratio < 0.06:
-                return f"低信息增量: {tail[-40:]}"
-        for size in range(12, 121):
-            unit = tail[-size:]
-            if len(set(unit)) <= 1:
-                continue
-            if tail.endswith(unit * 4):
-                return f"尾部循环片段: {unit[:40]}"
-
-        spaced_tail = re.sub(r"\s+", " ", analysis_text[-900:]).strip()
-        parts = [part.strip() for part in re.split(r"[。！？!?；;\n，,]+", spaced_tail) if len(part.strip()) >= 20]
-        if parts:
-            last = parts[-1]
-            if spaced_tail.count(last) >= 4:
-                return f"重复句子: {last[:60]}"
         return ""
 
 
@@ -575,9 +595,10 @@ def stream_ollama_chat(
     early_stop: str | None = None,
 ) -> str:
     selected_model = model or Config.think_model
-    total_attempts = MODEL_MAX_RETRIES + 1
     base_options = configured_model_options(options)
     early_stop = early_stop or ("job_score" if label in JOB_SCORE_EARLY_STOP_LABELS else None)
+    # 评分调用有上层 calculate_job_score 的三层策略重试，内部不重试
+    total_attempts = 1 if early_stop == "job_score" else MODEL_MAX_RETRIES + 1
     timeout_seconds = JOB_SCORE_TIMEOUT_SECONDS if early_stop == "job_score" else MODEL_CALL_TIMEOUT_SECONDS
 
     def start_worker(
@@ -681,10 +702,11 @@ def stream_ollama_chat(
                 stop_event.set()
                 printer.flush()
                 print("", flush=True)
-                last_error = TimeoutError(f"{label} 超过 {timeout_seconds} 秒未完成")
+                timeout_reason = "未收到任何响应" if not has_chunk else f"已收到 {len(content)} 字符但未完成"
+                last_error = TimeoutError(f"{label} 超过 {timeout_seconds} 秒未完成（{timeout_reason}）")
                 runtime_state.emit(
                     "model_timeout",
-                    f"模型调用超时: {label}",
+                    f"模型调用超时: {label}（{timeout_reason}）",
                     source="model",
                     level="error",
                     detail={
@@ -694,6 +716,9 @@ def stream_ollama_chat(
                         "attempt": attempt,
                         "max_retries": MODEL_MAX_RETRIES,
                         "timeout_seconds": timeout_seconds,
+                        "has_chunk": has_chunk,
+                        "content_length": len(content),
+                        "timeout_reason": timeout_reason,
                     },
                 )
                 retry_message("超时", attempt, last_error)
@@ -736,6 +761,24 @@ def stream_ollama_chat(
                     stop_event.set()
                     printer.flush()
                     print("", flush=True)
+                    # 评分调用：返回已累积内容，由上层 calculate_job_score 解析失败后触发策略重试（关思考）
+                    if early_stop == "job_score":
+                        runtime_state.emit(
+                            "model_repetition_detected",
+                            f"模型输出疑似重复循环: {label}，返回内容由上层策略重试",
+                            source="model",
+                            level="warn",
+                            detail={
+                                "label": label,
+                                "provider": Config.model_provider,
+                                "model": selected_model,
+                                "attempt": attempt,
+                                "reason": repetition_reason,
+                                "preview": compact_model_text(content),
+                            },
+                        )
+                        runtime_state.emit("model_finished", f"{label} 完成（检测到重复，返回内容）", source="model")
+                        return content
                     last_error = ModelRepetitionError(repetition_reason)
                     runtime_state.emit(
                         "model_repetition_detected",
@@ -785,3 +828,60 @@ def stream_ollama_chat(
     )
     print(f"\n[模型] {message}", flush=True)
     raise RuntimeError(f"{message}: {last_error}")
+
+
+def model_warmup_check() -> dict[str, Any]:
+    """启动时快速检测模型连通性与延迟（流式，测首 token 延迟）。"""
+    from tools import now_iso
+
+    result: dict[str, Any] = {
+        "status": "unknown",
+        "provider": Config.model_provider,
+        "model": Config.think_model,
+        "last_checked": now_iso(),
+        "latency_seconds": None,
+        "error": "",
+    }
+    if Config.model_provider != "ollama":
+        result["status"] = "skipped"
+        result["error"] = "仅支持 Ollama 预热检测"
+        return result
+
+    payload = {
+        "model": Config.think_model,
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+        "options": {"num_predict": 5},
+    }
+    url = Config.ollama_host.rstrip("/") + "/api/chat"
+    started = time.monotonic()
+    try:
+        request = Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=30) as response:
+            # 流式：收到第一个有效 JSON chunk 即认为模型就绪
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    if chunk.get("message") or chunk.get("done"):
+                        break
+                except json.JSONDecodeError:
+                    continue
+        elapsed = time.monotonic() - started
+        result["status"] = "ready"
+        result["latency_seconds"] = round(elapsed, 3)
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        result["status"] = "error"
+        result["error"] = f"HTTP {exc.code}: {body[:200]}"
+    except (URLError, TimeoutError, OSError) as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+    return result

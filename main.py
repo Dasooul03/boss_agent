@@ -42,6 +42,15 @@ from tools import script_connect_hosts
 BASE_DIR = Path(__file__).resolve().parent
 WEB_SCRIPT_PATH = BASE_DIR / "web_script.js"
 MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jobseeker-model")
+MODEL_EXECUTOR_SHUTDOWN = False
+
+
+def shutdown_model_executor() -> None:
+    global MODEL_EXECUTOR_SHUTDOWN
+    if MODEL_EXECUTOR_SHUTDOWN:
+        return
+    MODEL_EXECUTOR_SHUTDOWN = True
+    MODEL_EXECUTOR.shutdown(wait=True, cancel_futures=True)
 
 
 @asynccontextmanager
@@ -51,7 +60,12 @@ async def lifespan(app: FastAPI):
     cache.load()
     runtime_state.log("Job Seeker 服务已启动")
     runtime_state.log(f"岗位评分版本: {SCORING_VERSION}")
-    yield
+    try:
+        yield
+    finally:
+        runtime_state.log("正在关闭服务…")
+        shutdown_model_executor()
+        runtime_state.log("Job Seeker 服务已关闭")
 
 
 app = FastAPI(title="Job Seeker", version="2026.06-cli", lifespan=lifespan)
@@ -314,14 +328,21 @@ async def jobs_analyze(payload: JobAnalyzeRequest):
         greeting = greeting_service.get_greeting()
         confirmed_greeting = greeting["active_content"] if greeting.get("confirmed") else ""
         loop = asyncio.get_running_loop()
-        analysis = await loop.run_in_executor(
-            MODEL_EXECUTOR,
-            analyze_job,
-            job,
-            cache.user_detail,
-            confirmed_greeting,
-            cache.profile,
-        )
+        try:
+            analysis = await loop.run_in_executor(
+                MODEL_EXECUTOR,
+                analyze_job,
+                job,
+                cache.user_detail,
+                confirmed_greeting,
+                cache.profile,
+            )
+        except RuntimeError as exc:
+            if "cannot schedule new futures" in str(exc) or "shutdown" in str(exc).lower():
+                runtime_state.log("服务正在关闭，跳过当前分析任务", source="model", level="warn")
+                analysis = missing_profile_analysis("服务关闭中，分析被中断")
+            else:
+                raise
         if analysis.get("total_score", 0) <= 0 and analysis.get("risks"):
             final_action = final_action or "model_failed_skip"
     saved_job = database.upsert_job(job, analysis, final_action=final_action)
@@ -447,5 +468,5 @@ if __name__ == "__main__":
     from cli_console import run_autorun, run_cli
 
     if len(sys.argv) > 1 and sys.argv[1] == "autorun":
-        raise SystemExit(run_autorun(app))
-    run_cli(app)
+        raise SystemExit(run_autorun(app, shutdown_callback=shutdown_model_executor))
+    run_cli(app, shutdown_callback=shutdown_model_executor)

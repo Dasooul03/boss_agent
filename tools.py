@@ -18,7 +18,14 @@ def now_iso() -> str:
 
 def extract_llm_reply(content: str) -> str:
     """获取大模型的最终回复，剥离常见 think 标签。"""
-    return re.split(r'</think>\s*', content or "")[-1].strip()
+    text = content or ""
+    if "<think>" in text:
+        close_index = text.rfind("</think>")
+        if close_index >= 0:
+            text = text[close_index + len("</think>"):]
+        else:
+            text = text.split("<think>", 1)[0]
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 def getLLMReply(content: str) -> str:

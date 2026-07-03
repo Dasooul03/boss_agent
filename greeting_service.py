@@ -70,6 +70,21 @@ def save_greeting(content: str, name: str = "默认话术") -> dict[str, Any]:
     return _save(data)
 
 
+def _generate_greeting_raw(style: str, prompt: str, options: dict[str, Any], attempt: int) -> str:
+    """单次打招呼生成，返回提取后的文本。"""
+    label = f"生成打招呼草稿: {style}" if attempt == 1 else f"生成打招呼草稿: {style} (重试{attempt})"
+    raw = stream_ollama_chat(
+        label,
+        [
+            {"role": "system", "content": GREETING},
+            {"role": "user", "content": prompt},
+        ],
+        model=Config.think_model,
+        options=options,
+    )
+    return extract_llm_reply(raw).replace("\n", " ").strip()
+
+
 def generate_greeting(style: str = "default") -> dict[str, Any]:
     cache.load()
     if not cache.user_detail.strip():
@@ -81,26 +96,52 @@ def generate_greeting(style: str = "default") -> dict[str, Any]:
 # 用户详情
 {redact_privacy(cache.user_detail)}
 """.strip()
+
+    base_options: dict[str, Any] = {
+        "temperature": 0.4,
+        "num_ctx": 10240,
+        "num_predict": -1,  # 不限制令牌数，让模型自由输出
+        "think": True,  # 打招呼需要深度推理，强制开启思考
+    }
+
     try:
-        raw = stream_ollama_chat(
-            f"生成打招呼草稿: {style}",
-            [
-                {"role": "system", "content": GREETING},
-                {"role": "user", "content": prompt},
-            ],
-            model=Config.think_model,
-            options={"temperature": 0.4, "num_ctx": 10240},
-        )
+        # ── 第 1 次：默认参数 + 强制思考 ──
+        content = _generate_greeting_raw(style, prompt, base_options, 1)
+        if content:
+            runtime_state.log(f"已生成打招呼草稿: {style}")
+            return {
+                "style": style,
+                "content": content,
+                "privacy_findings": detect_privacy(content),
+                "confirmed": False,
+            }
+
+        # ── 第 2 次：调高温度 ──
+        runtime_state.log(f"打招呼第1次无输出，第2次重试（调高温度）…", source="model")
+        options_2 = dict(base_options, temperature=0.6)
+        content = _generate_greeting_raw(style, prompt, options_2, 2)
+        if content:
+            runtime_state.log(f"已生成打招呼草稿: {style}")
+            return {
+                "style": style,
+                "content": content,
+                "privacy_findings": detect_privacy(content),
+                "confirmed": False,
+            }
+
+        # ── 第 3 次：调高温度 + 调高 top_p ──
+        runtime_state.log(f"打招呼第2次仍无输出，第3次重试（调高温度+top_p）…", source="model")
+        options_3 = dict(base_options, temperature=0.7, top_p=0.9)
+        content = _generate_greeting_raw(style, prompt, options_3, 3)
+        runtime_state.log(f"已生成打招呼草稿: {style}")
+        return {
+            "style": style,
+            "content": content,
+            "privacy_findings": detect_privacy(content),
+            "confirmed": False,
+        }
     finally:
         runtime_state.set_task("idle")
-    content = extract_llm_reply(raw).replace("\n", " ").strip()
-    runtime_state.log(f"已生成打招呼草稿: {style}")
-    return {
-        "style": style,
-        "content": content,
-        "privacy_findings": detect_privacy(content),
-        "confirmed": False,
-    }
 
 
 def generate_variants() -> dict[str, Any]:

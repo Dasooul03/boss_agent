@@ -177,15 +177,7 @@ if ($provider -eq "openai" -and -not $openaiKey) {
     Write-Warn "Provider is OpenAI, but API Key is missing. Run config in the CLI."
 }
 
-if ($NoOpen) {
-    $env:JOB_SEEKER_AUTO_OPEN = "0"
-} else {
-    $env:JOB_SEEKER_AUTO_OPEN = "1"
-}
-$env:JOB_SEEKER_BOSS_URL = $BossUrl
-
 Write-Info "Starting Job Seeker CLI..."
-Write-Info "After the local API is ready, the userscript page and BOSS search page will open automatically."
 $mainPy = Join-Path $ProjectRoot "main.py"
 & $pythonExe $mainPy
 $exitCode = $LASTEXITCODE

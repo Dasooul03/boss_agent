@@ -257,6 +257,7 @@ class RuntimeState:
             return result
 
     def as_dict(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
+        model_thinking_disabled = bool(Config.disable_model_thinking)
         status = {
             "backend": {
                 "running": True,
@@ -273,8 +274,17 @@ class RuntimeState:
                 "model": Config.think_model,
                 "openai_api_base": Config.openai_api_base if Config.model_provider == "openai" else "",
                 "openai_api_key_configured": bool(str(Config.openai_api_key).strip()),
-                "disable_model_thinking": bool(Config.disable_model_thinking),
+                "disable_model_thinking": model_thinking_disabled,
                 "show_model_reasoning": bool(Config.show_model_reasoning),
+                "scoring_thinking": not model_thinking_disabled,
+                "non_scoring_thinking": not model_thinking_disabled,
+                "profile_tags_thinking": not model_thinking_disabled,
+                "greeting_thinking": True,
+                "thinking_policy": {
+                    "scoring": not model_thinking_disabled,
+                    "profile_tags": not model_thinking_disabled,
+                    "greeting": True,
+                },
                 "external_model_profile": Config.external_model_profile if Config.model_provider == "openai" else "",
                 "parameters": {
                     "temperature": Config.model_temperature,

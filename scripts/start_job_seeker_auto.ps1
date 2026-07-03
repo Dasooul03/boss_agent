@@ -171,13 +171,6 @@ if ($provider -eq "openai" -and -not $openaiKey) {
     Pause-And-Exit 1
 }
 
-if ($NoOpen) {
-    $env:JOB_SEEKER_AUTO_OPEN = "0"
-} else {
-    $env:JOB_SEEKER_AUTO_OPEN = "1"
-}
-$env:JOB_SEEKER_BOSS_URL = $BossUrl
-
 Write-Info "Starting Job Seeker auto-run..."
 Write-Info "This mode uses saved configuration and starts automatically after the userscript connects."
 $mainPy = Join-Path $ProjectRoot "main.py"

@@ -8,6 +8,7 @@ continue to import it, while the values now live in ``data/config.json``.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model_repeat_last_n": 128,
     "model_frequency_penalty": 0.3,
     "model_presence_penalty": 0.1,
+    "job_score_num_predict_think_off": -1,
+    "job_score_num_predict_think_on": -1,
 }
 
 
@@ -73,6 +76,16 @@ def _as_int(value: Any, default: int, minimum: int, maximum: int) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _as_token_budget(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if parsed == -1:
+        return -1
     return max(minimum, min(maximum, parsed))
 
 
@@ -122,6 +135,8 @@ class Config:
     model_repeat_last_n = DEFAULT_CONFIG["model_repeat_last_n"]
     model_frequency_penalty = DEFAULT_CONFIG["model_frequency_penalty"]
     model_presence_penalty = DEFAULT_CONFIG["model_presence_penalty"]
+    job_score_num_predict_think_off = DEFAULT_CONFIG["job_score_num_predict_think_off"]
+    job_score_num_predict_think_on = DEFAULT_CONFIG["job_score_num_predict_think_on"]
 
     @classmethod
     def load(cls) -> dict[str, Any]:
@@ -146,8 +161,8 @@ class Config:
                     if any(key not in saved for key in DEFAULT_CONFIG):
                         should_rewrite = True
                     data.update({k: v for k, v in saved.items() if k in DEFAULT_CONFIG})
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                print(f"[警告] 配置文件损坏，已使用默认配置: {CONFIG_PATH} / {exc}", file=sys.stderr)
         cls.apply(data)
         if not CONFIG_PATH.exists() or should_rewrite:
             cls.save(data)
@@ -173,6 +188,18 @@ class Config:
         data["model_repeat_last_n"] = _as_int(data.get("model_repeat_last_n"), 128, 0, 4096)
         data["model_frequency_penalty"] = _as_float(data.get("model_frequency_penalty"), 0.3, 0.0, 2.0)
         data["model_presence_penalty"] = _as_float(data.get("model_presence_penalty"), 0.1, 0.0, 2.0)
+        data["job_score_num_predict_think_off"] = _as_token_budget(
+            data.get("job_score_num_predict_think_off"),
+            DEFAULT_CONFIG["job_score_num_predict_think_off"],
+            50,
+            2000,
+        )
+        data["job_score_num_predict_think_on"] = _as_token_budget(
+            data.get("job_score_num_predict_think_on"),
+            DEFAULT_CONFIG["job_score_num_predict_think_on"],
+            500,
+            8000,
+        )
         for key in DEFAULT_CONFIG:
             setattr(cls, key, data.get(key, DEFAULT_CONFIG[key]))
 

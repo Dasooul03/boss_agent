@@ -10,7 +10,7 @@ import time
 import webbrowser
 from getpass import getpass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -245,6 +245,16 @@ def ask_list(prompt: str, current: list[str]) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _ask_thinking(current: dict[str, Any]) -> bool:
+    """询问是否关闭模型思考，提前告知策略再让用户选择。"""
+    print("[提示] 评分任务输出简短（仅3个数字），推荐关闭思考以获得更快响应。")
+    print("       关思考时评分令牌 {} / 开思考时 {}，系统支持3次自动重试。".format(
+        current.get("job_score_num_predict_think_off", Config.job_score_num_predict_think_off),
+        current.get("job_score_num_predict_think_on", Config.job_score_num_predict_think_on)))
+    print("       打招呼等深度任务始终开启思考且不限制令牌。标签/画像遵循此全局设置。")
+    return ask_bool("是否关闭模型思考", bool(current.get("disable_model_thinking", True)))
+
+
 def ask_api_key(current: str) -> str:
     if current and not ask_bool("是否更新 OpenAI API Key", False):
         return current
@@ -273,12 +283,12 @@ def configure_base() -> None:
         "openai_api_base": ask("OpenAI API 地址", current["openai_api_base"]),
         "openai_api_key": ask_api_key(str(current.get("openai_api_key", ""))) if model_provider == "openai" else current.get("openai_api_key", ""),
         "think_model": ask("模型名称", current["think_model"]),
-        "server_port": int(ask("本地服务端口", str(current["server_port"]))),
-        "score_threshold": int(ask("最低匹配度阈值", str(current["score_threshold"]))),
-        "session_greet_limit": int(ask("本次最多打招呼数量", str(current["session_greet_limit"]))),
-        "job_detail_max_chars": int(ask("职位描述传给模型的最大字数", str(current["job_detail_max_chars"]))),
+        "server_port": ask_int("本地服务端口", int(current["server_port"])),
+        "score_threshold": ask_int("最低匹配度阈值", int(current["score_threshold"])),
+        "session_greet_limit": ask_int("本次最多打招呼数量", int(current["session_greet_limit"])),
+        "job_detail_max_chars": ask_int("职位描述传给模型的最大字数", int(current["job_detail_max_chars"])),
         "log_verbosity": ask("日志模式 compact/normal/debug", str(current.get("log_verbosity", "compact"))),
-        "disable_model_thinking": ask_bool("是否关闭模型思考", bool(current.get("disable_model_thinking", True))),
+        "disable_model_thinking": _ask_thinking(current),
         "show_model_reasoning": ask_bool("是否显示模型思考过程", bool(current.get("show_model_reasoning", False))),
         "external_model_profile": ask("OpenAI 模型类型 generic/qwen/deepseek/doubao", str(current.get("external_model_profile", "generic"))),
     }
@@ -328,18 +338,88 @@ def ensure_profile() -> None:
     runtime_state.emit("profile_saved", f"用户详情已确认，长度 {len(cache.user_detail)} 字", source="config")
 
 
-def edit_tags() -> None:
+def edit_profile() -> None:
+    """重新生成或手动编辑用户画像（不涉及标签）。"""
+    from core import generate_user_detail
+
     cache.load()
-    if not cache.tags:
-        if not cache.resume.strip():
-            print("[配置] 当前没有简历，无法生成岗位标签。")
-            return
-        profile = cache.generate_profile()
-        cache.write_tags_file(profile.get("tags", []))
-    tags_path = cache.write_tags_file()
-    open_editor(tags_path, "打开编辑器编辑岗位搜索标签", "tags_edit")
-    cache.save_tags(tags_path.read_text(encoding="utf-8"))
-    print(f"[配置] 岗位标签已保存: {'、'.join(cache.tags)}")
+    if not cache.resume.strip():
+        print("[错误] 请先上传或保存简历（输入 resume 命令）")
+        return
+    print("[1] 重新从简历生成用户画像")
+    print("[2] 手动编辑画像文件（data/cache/user_detail.md）")
+    choice = input("  选择 [Enter 取消]: ").strip()
+    if choice == "1":
+        detail = generate_user_detail(cache.resume)
+        path = cache.write_user_detail_file(detail)
+        open_editor(path, "打开编辑器确认用户画像", "profile_edit")
+        cache.save_user_detail(path.read_text(encoding="utf-8"))
+        runtime_state.log(f"用户画像已重新生成，长度 {len(cache.user_detail)} 字", source="config")
+    elif choice == "2":
+        path = cache.write_user_detail_file()
+        open_editor(path, "打开编辑器编辑用户画像", "profile_edit")
+        cache.save_user_detail(path.read_text(encoding="utf-8"))
+        runtime_state.log(f"用户画像已手动编辑，长度 {len(cache.user_detail)} 字", source="config")
+
+
+def edit_session_settings() -> None:
+    """修改本轮轮次设置：岗位标签 + 打招呼上限。"""
+    cache.load()
+    print("[轮次设置] 当前配置:")
+    print(f"  岗位标签: {'、'.join(cache.tags) if cache.tags else '(空)'}")
+    print(f"  打招呼上限: {Config.session_greet_limit}")
+    print()
+    print("[1] 修改岗位搜索标签")
+    print("[2] 修改本次打招呼上限")
+    choice = input("  选择 [Enter 取消]: ").strip()
+
+    if choice == "1":
+        edit_tags()
+    elif choice == "2":
+        while True:
+            raw = ask("本次最多打招呼数量", str(Config.session_greet_limit))
+            try:
+                limit = int(raw)
+            except ValueError:
+                print("[配置] 请输入整数。")
+                continue
+            if limit <= 0:
+                print("[配置] 本次最多打招呼数量必须大于 0。")
+                continue
+            break
+        Config.save({"session_greet_limit": limit})
+        runtime_state.emit(
+            "session_limit_updated",
+            f"打招呼上限调整为 {limit}",
+            source="config",
+        )
+        print(f"[配置] 本次最多打招呼数量已更新为: {limit}")
+    elif choice:
+        print("[配置] 无效选择，已取消。")
+
+
+def edit_tags() -> None:
+    """重新生成或手动编辑岗位搜索标签。"""
+    from core import generate_tags
+
+    cache.load()
+    if not cache.resume.strip():
+        print("[错误] 请先上传或保存简历（输入 resume 命令）")
+        return
+    print("[1] 重新从简历生成岗位标签")
+    print("[2] 手动编辑标签文件（data/cache/tags.txt）")
+    choice = input("  选择 [Enter 取消]: ").strip()
+    if choice == "1":
+        tags = generate_tags(cache.resume)
+        path = cache.write_tags_file(tags)
+        open_editor(path, "打开编辑器确认岗位标签", "tags_edit")
+        cache.save_tags(path.read_text(encoding="utf-8"))
+        runtime_state.log(f"岗位标签已重新生成: {'、'.join(cache.tags)}", source="config")
+    elif choice == "2":
+        path = cache.write_tags_file()
+        open_editor(path, "打开编辑器编辑岗位标签", "tags_edit")
+        cache.save_tags(path.read_text(encoding="utf-8"))
+        runtime_state.log(f"岗位标签已手动编辑: {'、'.join(cache.tags)}", source="config")
 
 
 def prepare_session_start(force: bool = False) -> bool:
@@ -353,30 +433,34 @@ def prepare_session_start(force: bool = False) -> bool:
             print("[配置] 当前没有简历，无法生成本轮岗位标签。")
             runtime_state.emit("session_prepare_failed", "当前没有简历，无法生成本轮岗位标签", source="config", level="error")
             return False
-        profile = cache.generate_profile()
-        cache.write_tags_file(profile.get("tags", []))
+        from core import generate_tags
 
-    tags_path = cache.write_tags_file()
-    open_editor(tags_path, "打开编辑器确认本轮岗位搜索标签", "session_tags_edit")
-    cache.save_tags(tags_path.read_text(encoding="utf-8"))
+        try:
+            generated_tags = generate_tags(cache.resume)
+            cache.write_tags_file(generated_tags)
+            cache.load()  # 重新加载以获取刚生成的标签
+            runtime_state.emit(
+                "tags_generated",
+                f"岗位标签为空，已仅基于简历补齐标签: {'、'.join(cache.tags)}",
+                source="config",
+            )
+        except Exception as exc:
+            print(f"[配置] 自动生成岗位标签失败: {exc}。请先输入 tags 命令人工处理。")
+            runtime_state.emit(
+                "session_prepare_failed",
+                f"自动生成岗位标签失败: {exc}",
+                source="config",
+                level="error",
+            )
+            return False
+
     if not cache.tags:
-        print("[配置] 岗位标签为空，请至少保留一个搜索关键词。")
-        runtime_state.emit("session_prepare_failed", "岗位标签为空，本轮未启动", source="config", level="error")
+        print("[配置] 岗位标签为空，请先输入 tags 命令人工处理。")
+        runtime_state.emit("session_prepare_failed", "岗位标签为空，本轮未启动，请先使用 tags 命令处理", source="config", level="error")
         return False
 
-    while True:
-        raw_limit = ask("本次最多打招呼数量", str(Config.session_greet_limit))
-        try:
-            limit = int(raw_limit)
-        except ValueError:
-            print("[配置] 请输入整数。")
-            continue
-        if limit <= 0:
-            print("[配置] 本次最多打招呼数量必须大于 0。")
-            continue
-        break
+    limit = Config.session_greet_limit  # 直接使用已有配置，不再交互询问
 
-    Config.save({"session_greet_limit": limit})
     SESSION_PREPARED = True
     runtime_state.emit(
         "session_config_saved",
@@ -389,22 +473,40 @@ def prepare_session_start(force: bool = False) -> bool:
     return True
 
 
+def edit_greeting() -> None:
+    """重新生成或手动编辑打招呼用语。"""
+    print("[1] 重新生成打招呼用语")
+    print("[2] 手动输入话术")
+    choice = input("  选择 [Enter 取消]: ").strip()
+    if choice == "1":
+        style = "default"
+        styles = ["简洁版", "热情版", "技术突出版", "业务匹配版"]
+        print("  可选风格: " + " / ".join(f"[{i+1}] {s}" for i, s in enumerate(styles)))
+        style_choice = input(f"  选择风格 [Enter=default]: ").strip()
+        if style_choice.isdigit() and 1 <= int(style_choice) <= len(styles):
+            style = styles[int(style_choice) - 1]
+        draft = greeting_service.generate_greeting(style)
+        print(f"\n[模型输出] 打招呼草稿 ({style})：")
+        print(draft["content"])
+        if ask_bool("是否启用这条话术", True):
+            greeting_service.save_greeting(draft["content"], f"CLI {style}")
+            return
+        print("已取消，话术未更改。")
+    elif choice == "2":
+        content = ask("请输入打招呼用语（不含姓名、手机号等隐私信息）")
+        if content.strip():
+            greeting_service.save_greeting(content.strip(), "CLI 手动话术")
+            print("[配置] 打招呼用语已保存。")
+        else:
+            print("[配置] 已取消。")
+
+
 def ensure_greeting() -> None:
     greeting = greeting_service.get_greeting()
     if greeting.get("confirmed") and ask_bool("检测到已有打招呼用语，是否继续使用", True):
         runtime_state.emit("greeting_ready", "继续使用已确认打招呼用语", source="config")
         return
-    while True:
-        draft = greeting_service.generate_greeting("default")
-        print("\n[模型输出] 打招呼草稿：")
-        print(draft["content"])
-        if ask_bool("是否启用这条话术", True):
-            greeting_service.save_greeting(draft["content"], "CLI 确认话术")
-            return
-        if ask_bool("是否手动输入话术", False):
-            content = ask("请输入打招呼用语")
-            greeting_service.save_greeting(content, "CLI 手动话术")
-            return
+    edit_greeting()
 
 
 def needs_initialization() -> bool:
@@ -433,6 +535,80 @@ def run_initialization() -> None:
     else:
         runtime_state.set_control("pause")
         print("[控制] 已暂停。可输入 config/resume/greeting 调整配置。")
+
+
+def _ensure_model_warmup() -> None:
+    """启动时执行一次模型预热检测，结果写入 runtime_state 缓存。"""
+    from model_stream import model_warmup_check
+
+    warmup = model_warmup_check()
+    runtime_state.model_warmup.update(warmup)
+    if warmup.get("status") == "ready":
+        print(f"[预热] 模型连通性检查: {warmup['model']} ... OK ({warmup.get('latency_seconds', 0)}s)")
+    else:
+        print(f"[预热] 模型连通性检查: {warmup['model']} ... 失败 ({warmup.get('error', '未知')})")
+
+
+def print_status_panel() -> None:
+    """显示格式化的系统状态面板（读取缓存的预热结果，不重复检测）。"""
+    from model_stream import model_warmup_check
+
+    cache.load()
+    greeting = greeting_service.get_greeting()
+
+    # 使用缓存的预热结果；首次（unknown）则执行一次检测
+    warmup = runtime_state.model_warmup
+    if warmup.get("status") == "unknown":
+        warmup = model_warmup_check()
+        runtime_state.model_warmup.update(warmup)
+    model_ok = warmup.get("status") == "ready"
+    model_status = f"✓ 已连接 ({warmup.get('latency_seconds', 0)}s)" if model_ok else f"✗ 未连接: {warmup.get('error', '未知')}"
+    resume_ok = bool(cache.resume.strip())
+    profile_ok = cache.cache_status().get("profile_generated", False)
+    greeting_ok = greeting.get("confirmed", False)
+    script = runtime_state.script_snapshot()
+    script_ok = script.get("connected", False)
+    control = runtime_state.control
+
+    scoring_think = "开启" if not Config.disable_model_thinking else "关闭"
+    model_label = f"{Config.think_model} ({Config.model_provider})"
+
+    def _icon(ok: bool) -> str:
+        return "✓" if ok else "○"
+
+    panel = f"""
+╔══════════════════════════════════════════════════════════════╗
+║              Job Seeker 状态面板                              ║
+╠══════════════════════════════════════════════════════════════╣
+║  服务地址    http://{Config.server_host}:{Config.server_port:<45}║
+║  脚本地址    http://{Config.server_host}:{Config.server_port}/web_script.user.js{' ' * (30 - len(str(Config.server_port)))}║
+╠══════════════════════════════════════════════════════════════╣
+║  模型        {model_label:<48}║
+║  模型状态    {model_status:<48}║
+║  思考模式    评分: {scoring_think:<6} │ 打招呼: 强制开启{' ' * 24}║
+║  评分阈值    {Config.score_threshold}分 / 本次上限 {Config.session_greet_limit}{' ' * 30}║
+║  评分令牌    关思考 {Config.job_score_num_predict_think_off} / 开思考 {Config.job_score_num_predict_think_on}{' ' * 18}║
+║  温度/top_p  {Config.model_temperature} / {Config.model_top_p}{' ' * 38}║
+╠══════════════════════════════════════════════════════════════╣
+║  简历        {_icon(resume_ok)} {'已保存' if resume_ok else '未准备'}{' ' * 42}║
+║  用户画像    {_icon(profile_ok)} {'已生成' if profile_ok else '未生成'}{' ' * 42}║
+║  打招呼语    {_icon(greeting_ok)} {'已确认' if greeting_ok else '未确认'}{' ' * 42}║
+╠══════════════════════════════════════════════════════════════╣
+║  脚本连接    {_icon(script_ok)} {'已连接' if script_ok else '等待中...'}{' ' * 42}║
+║  控制状态    {'▶ running' if control == 'resume' else '⏸ ' + control}{' ' * 40}║
+╚══════════════════════════════════════════════════════════════╝"""
+
+    # 精简版（compact 日志模式下使用单行格式）
+    if Config.log_verbosity == "compact":
+        panel = f"""
+┌──────────────────────────────────────────────────────────────┐
+│  Job Seeker  v2026.07                                        │
+│  {model_label} │ 评分思考: {scoring_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
+│  模型: {model_status[:50]} │ 评分令牌: {Config.job_score_num_predict_think_off}/{Config.job_score_num_predict_think_on} │
+│  简历: {_icon(resume_ok)} 画像: {_icon(profile_ok)} 话术: {_icon(greeting_ok)} │ 脚本: {_icon(script_ok)} │ {control} │
+└──────────────────────────────────────────────────────────────┘"""
+
+    print(panel, flush=True)
 
 
 def print_summary() -> None:
@@ -500,20 +676,23 @@ def show_autorun_next_steps() -> None:
 
 
 def maybe_open_startup_pages() -> None:
-    enabled = str(os.environ.get("JOB_SEEKER_AUTO_OPEN", "")).strip().lower() in {"1", "true", "yes", "on"}
-    if not enabled:
-        return
-    print("[启动] 等待本地 API 就绪，准备打开浏览器页面...")
+    """每次启动自动打开 BOSS 搜索页；脚本安装页仅首次运行时打开。"""
     if not wait_for_api_ready():
-        print("[启动] 本地 API 未在限定时间内就绪，已跳过自动打开浏览器页面。")
+        print("[启动] 本地 API 未在限定时间内就绪，已跳过自动打开。")
         return
-    urls = [script_install_url(), os.environ.get("JOB_SEEKER_BOSS_URL", BOSS_SEARCH_URL) or BOSS_SEARCH_URL]
-    for url in urls:
+    # 每次启动都打开 BOSS 搜索页
+    try:
+        webbrowser.open(BOSS_SEARCH_URL, new=2)
+        print("[启动] 已打开 BOSS 搜索页。")
+    except Exception as exc:
+        print(f"[启动] 打开 BOSS 搜索页失败: {exc}")
+    # 脚本安装页仅首次运行
+    if CONFIG_WAS_MISSING:
         try:
-            webbrowser.open(url, new=2)
+            webbrowser.open(script_install_url(), new=2)
+            print("[启动] 首次运行，已打开脚本安装页（后续输入 script 命令可重新打开）。")
         except Exception as exc:
-            print(f"[启动] 自动打开失败: {url} / {exc}")
-    print("[启动] 已尝试打开油猴脚本安装/更新页和 BOSS 搜索页。")
+            print(f"[启动] 打开脚本安装页失败: {exc}")
 
 
 def wait_for_script_ready(timeout_seconds: float = 120.0) -> bool:
@@ -540,35 +719,31 @@ def read_script_versions() -> tuple[str, str]:
 
 def show_script_install() -> None:
     meta_version, runtime_version = read_script_versions()
+    url = script_install_url()
     print("[脚本] 篡改猴安装/更新")
-    print(f"- 安装地址: {script_install_url()}")
+    print(f"- 安装地址: {url}")
     print(f"- 元数据版本: {meta_version}")
     print(f"- 运行版本: {runtime_version}")
-    print(f"- 需要 @connect: {', '.join(build_script_connect_hosts(script_install_url()))}")
+    print(f"- 需要 @connect: {', '.join(build_script_connect_hosts(url))}")
     print("- 用法: 在浏览器打开安装地址，按篡改猴提示安装或更新，然后刷新 BOSS 搜索页。")
     print("- 验证: CLI 应显示脚本就绪，并且 status/doctor 中的脚本版本等于运行版本。")
+    try:
+        webbrowser.open(url, new=2)
+        print("- 已尝试在浏览器中打开安装地址。")
+    except Exception as exc:
+        print(f"- 自动打开失败: {exc}")
 
 
 def show_status() -> None:
-    status = runtime_state.as_dict(cache.status(), cache.cache_status())
-    print_summary()
-    script = status["script"]
-    connected = "在线" if script.get("connected") else ("心跳过期" if script.get("stale") else "离线")
-    print(f"- 脚本: {connected} / {script['page']} / {script['status']} / {script['current_action'] or '空闲'}")
-    if script.get("heartbeat_age_seconds") is not None:
-        print(f"- 脚本心跳: {script.get('heartbeat_age_seconds')} 秒前")
-    detail = script.get("detail") or {}
-    if detail.get("version"):
-        print(f"- 脚本版本: {detail.get('version')}")
+    print_status_panel()
+    # 补充脚本会话细节（面板中已包含基本连接状态，这里追加会话计数和版本）
+    detail = runtime_state.script_snapshot().get("detail") or {}
     if detail.get("sessionGreetLimit") is not None:
-        print(f"- 本轮打招呼: {detail.get('sessionGreetCount', 0)} / {detail.get('sessionGreetLimit')}")
-        print(f"- 运行标识: 后端 {status['backend'].get('run_id')} / 脚本 {detail.get('localSessionRunId') or detail.get('runId') or '-'}")
-        print(f"- 脚本后端标识: {detail.get('backendRunId') or '-'} / sessionEnded={detail.get('sessionEnded')}")
-    if not script.get("connected"):
-        print("- 提示: 请打开或刷新 BOSS 搜索页，并确认油猴脚本已启用。")
-    print(f"- 控制: {status['backend']['control']}")
-    model_status = status["ollama"]
-    print(f"- 模型服务状态: {'可用' if model_status.get('available') else '不可用'}")
+        print(f"  会话详情: 本轮 {detail.get('sessionGreetCount', 0)}/{detail.get('sessionGreetLimit')} | "
+              f"脚本版本 {detail.get('version', '-')} | "
+              f"会话ID {detail.get('localSessionRunId') or detail.get('runId') or '-'}")
+    if not runtime_state.script_snapshot().get("connected"):
+        print("  提示: 请打开或刷新 BOSS 搜索页，并确认油猴脚本已启用。")
 
 
 def show_control_result(command: str) -> None:
@@ -796,8 +971,10 @@ def show_help() -> None:
   status        显示系统状态
   config        重新配置基础参数
   resume        重新上传/编辑简历
-  tags          编辑岗位搜索标签
-  greeting      重新生成并确认打招呼用语
+  profile       重新生成/编辑用户画像
+  session       修改本轮轮次设置（岗位标签 / 打招呼上限）
+  tags          重新生成/编辑岗位搜索标签
+  greeting      重新生成/编辑打招呼用语
   start         开始或继续运行
   pause         暂停运行
   stop          停止自动化
@@ -824,10 +1001,15 @@ def command_loop() -> None:
             configure_base()
         elif command == "resume":
             ensure_resume()
+        elif command == "profile":
+            edit_profile()
+            print_status_panel()
+        elif command == "session":
+            edit_session_settings()
         elif command == "tags":
             edit_tags()
         elif command == "greeting":
-            ensure_greeting()
+            edit_greeting()
         elif command in {"start", "resume-run"}:
             show_control_result("resume")
         elif command == "pause":
@@ -853,19 +1035,30 @@ def command_loop() -> None:
             print("未知命令，输入 help 查看帮助。")
 
 
-def run_cli(app) -> None:
+def run_cli(app, shutdown_callback: Callable[[], None] | None = None) -> None:
     database.init_db()
     cache.load()
     start_event_printer()
     runtime_state.emit("cli_start", "Job Seeker CLI 启动", source="startup")
     run_initialization()
-    start_api_server(app)
+    server = start_api_server(app)
+    wait_for_api_ready()
+    _ensure_model_warmup()
+    print_status_panel()
     maybe_open_startup_pages()
     show_startup_next_steps()
-    command_loop()
+    try:
+        command_loop()
+    except KeyboardInterrupt:
+        print("\n[退出] 正在关闭服务…")
+    finally:
+        server.should_exit = True
+        if shutdown_callback:
+            shutdown_callback()
+        print("[退出] 服务已关闭")
 
 
-def run_autorun(app) -> int:
+def run_autorun(app, shutdown_callback: Callable[[], None] | None = None) -> int:
     database.init_db()
     cache.load()
     start_event_printer()
@@ -875,8 +1068,9 @@ def run_autorun(app) -> int:
         print("[启动] 自动运行未开始。请使用人工启动器处理上述问题。")
         return 1
     start_api_server(app)
-    os.environ.setdefault("JOB_SEEKER_AUTO_OPEN", "1")
-    os.environ.setdefault("JOB_SEEKER_BOSS_URL", BOSS_SEARCH_URL)
+    wait_for_api_ready()
+    _ensure_model_warmup()
+    print_status_panel()
     maybe_open_startup_pages()
     show_autorun_next_steps()
     print("[脚本] 等待油猴脚本连接，最长等待 120 秒...")
@@ -886,5 +1080,9 @@ def run_autorun(app) -> int:
         return 2
     runtime_state.set_control("resume", new_run=True)
     print("[控制] 脚本已连接，自动化已开始运行。")
-    keep_process_alive()
+    try:
+        keep_process_alive()
+    finally:
+        if shutdown_callback:
+            shutdown_callback()
     return 0
