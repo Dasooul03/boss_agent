@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+if len(sys.argv) > 1 and sys.argv[1] == "agent":
+    from agent_cli import run_agent_command
+
+    raise SystemExit(run_agent_command(sys.argv[2:]))
+
 try:
-    from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+    from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import PlainTextResponse
 except ModuleNotFoundError as exc:
-    print("[错误] 缺少 Python 依赖，请先运行: pip install -r requirements.txt")
+    print("[错误] 缺少 Python 依赖，请先运行: pip install -r requirements.txt", file=sys.stderr)
     raise SystemExit(1) from exc
 
 import database
 import greeting_service
 import resume_service
+from agent_service import (
+    actions_payload,
+    agent_contract,
+    build_status_data,
+    configure_payload,
+    control_payload as agent_control_payload,
+    diagnose_payload,
+    history_payload,
+    logs_payload,
+    print_json,
+    start_payload,
+    status_payload,
+)
 from cache import cache
 from config import Config
 from core import SCORING_VERSION, analyze_job
@@ -136,8 +155,57 @@ async def web_script_user_js():
 
 @app.get("/status", summary="系统状态")
 async def status():
-    cache.load()
-    return runtime_state.as_dict(cache.status(), cache.cache_status())
+    return build_status_data()
+
+
+@app.get("/agent/status", summary="agent 系统状态")
+async def agent_status():
+    return status_payload()
+
+
+@app.get("/agent/diagnose", summary="agent 诊断快照")
+async def agent_diagnose():
+    return diagnose_payload()
+
+
+@app.post("/agent/configure", summary="agent 安全配置")
+async def agent_configure(payload: dict[str, Any] | None = Body(default=None)):
+    return configure_payload(payload)
+
+
+@app.post("/agent/start", summary="agent 启动自动化")
+async def agent_start():
+    return start_payload()
+
+
+@app.post("/agent/pause", summary="agent 暂停自动化")
+async def agent_pause():
+    return agent_control_payload("pause")
+
+
+@app.post("/agent/stop", summary="agent 停止自动化")
+async def agent_stop():
+    return agent_control_payload("stop")
+
+
+@app.get("/agent/logs", summary="agent 运行日志")
+async def agent_logs(
+    limit: int = Query(100, ge=1, le=300),
+    level: str = "",
+    source: str = "",
+    event_type: str = Query("", alias="type"),
+):
+    return logs_payload(limit, level, source, event_type)
+
+
+@app.get("/agent/history", summary="agent 历史记录")
+async def agent_history(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    return history_payload(limit, offset)
+
+
+@app.get("/agent/actions", summary="agent 待处理动作")
+async def agent_actions():
+    return actions_payload()
 
 
 @app.get("/config", summary="读取配置")
@@ -161,8 +229,20 @@ async def reload_resume():
 
 
 @app.get("/logs", summary="运行日志")
-async def logs(limit: int = Query(100, ge=1, le=300)):
-    return {"logs": list(runtime_state.logs)[:limit]}
+async def logs(
+    limit: int = Query(100, ge=1, le=300),
+    level: str = "",
+    source: str = "",
+    event_type: str = Query("", alias="type"),
+):
+    items = list(runtime_state.logs)
+    if level:
+        items = [item for item in items if item.get("level") == level]
+    if source:
+        items = [item for item in items if item.get("source") == source]
+    if event_type:
+        items = [item for item in items if item.get("type") == event_type]
+    return {"logs": items[:limit]}
 
 
 @app.post("/events", summary="记录执行事件")
@@ -237,7 +317,8 @@ async def get_greeting():
 @app.put("/greeting", summary="保存打招呼用语")
 async def put_greeting(payload: GreetingUpdate):
     try:
-        return greeting_service.save_greeting(payload.content, payload.name)
+        greeting_service.save_greeting(payload.content, payload.name)
+        return greeting_service.get_greeting()
     except Exception as exc:
         fail(str(exc))
 
@@ -378,7 +459,24 @@ def blocked_by_history(job: dict[str, Any], existing_job: dict[str, Any] | None)
     return ""
 
 
+def run_api_only() -> int:
+    try:
+        import uvicorn
+    except ModuleNotFoundError as exc:
+        print_json(agent_contract(ok=False, error="缺少 Python 依赖 uvicorn，请先运行: pip install -r requirements.txt"))
+        return 2
+    Config.load()
+    uvicorn.run(app, host=Config.server_host, port=int(Config.server_port), log_level="info")
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        raise SystemExit(run_api_only())
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        from mcp_server import run_mcp_server
+
+        raise SystemExit(run_mcp_server(app))
     from cli_console import run_cli
 
     run_cli(app)

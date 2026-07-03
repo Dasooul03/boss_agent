@@ -78,6 +78,16 @@ function Test-JobSeekerHealth {
     }
 }
 
+function Test-AgentContract {
+    param([int]$Port)
+    try {
+        $result = Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/agent/diagnose" -Method Get -TimeoutSec 2
+        return $null -ne $result.ok
+    } catch {
+        return $false
+    }
+}
+
 function Test-OllamaAvailable {
     param([string]$HostUrl)
     $ollamaTagsUrl = $HostUrl.TrimEnd("/") + "/api/tags"
@@ -147,6 +157,10 @@ $openaiKey = [string](Get-ConfigValue $config "openai_api_key" "")
 if (Test-TcpPort $port) {
     if (Test-JobSeekerHealth $port) {
         Write-Warn "Job Seeker is already running on port $port. This launcher will not start another backend."
+        if (-not (Test-AgentContract $port)) {
+            Write-Warn "The running service does not expose the new /agent contract. It is probably an older process."
+            Write-Warn "Exit the old Job Seeker window, then run this launcher again to load the current code."
+        }
         if (-not $NoOpen) {
             Open-StartupPages $port
         }

@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Job Seeker
 // @namespace    http://tampermonkey.net/
-// @version      2026.06.26.3
+// @version      2026.06.26.4
 // @description  Job Seeker 篡改猴插件
 // @author       Chatbot-Zhou
 // @match        https://www.zhipin.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=zhipin.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        GM_openInTab
 // @connect      127.0.0.1
 // @connect      localhost
 // @updateURL    http://127.0.0.1:33333/web_script.user.js
@@ -22,7 +23,7 @@
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.06-cli-autogreet.19',
+        scriptVersion: '2026.06-cli-autogreet.20',
         resumeIndex: 0, // 第几份简历，从 0 开始递增
         serverHost: 'http://127.0.0.1:33333', // 本地服务的主机地址
         thread: 60, // 分数阈值，低于这个就不发消息了
@@ -174,7 +175,17 @@
                 // 设置超时
                 const timeoutId = setTimeout(() => {
                     observer.disconnect();
-                    reject(new Error('未找到目标元素'));
+                    const platformLimit = this.detectPlatformLimit();
+                    if (platformLimit) {
+                        reject(new Error(`平台次数限制: ${platformLimit}`));
+                        return;
+                    }
+                    const interruption = this.detectManualInterruption();
+                    if (interruption) {
+                        reject(new Error(`需要人工处理: ${interruption}`));
+                        return;
+                    }
+                    reject(new Error(`未找到目标元素: ${Array.isArray(selector) ? selector.join(', ') : selector}`));
                 }, timeout);
 
                 // 定义MutationObserver回调
@@ -219,6 +230,16 @@
                 });
                 const timeoutId = setTimeout(() => {
                     observer.disconnect();
+                    const platformLimit = this.detectPlatformLimit();
+                    if (platformLimit) {
+                        reject(new Error(`平台次数限制: ${platformLimit}`));
+                        return;
+                    }
+                    const interruption = this.detectManualInterruption();
+                    if (interruption) {
+                        reject(new Error(`需要人工处理: ${interruption}`));
+                        return;
+                    }
                     reject(new Error(`未找到目标元素: ${list.join(', ')}, 等待 ${Date.now() - startedAt}ms`));
                 }, timeout);
                 observer.observe(document.documentElement, {
@@ -300,7 +321,24 @@
         },
         openTabNSetTimestamp(href, key, self = false) {
             localStorage.setItem(key, new Date().getTime());
-            return window.open(href, self ? '_self' : key);
+
+            // 当前页跳转：用于回到搜索页等场景，保持原页面内跳转。
+            if (self) {
+                location.href = href;
+                return true;
+            }
+
+            // 优先使用 Tampermonkey 后台打开，避免新标签页抢占当前页面焦点。
+            if (typeof GM_openInTab === 'function') {
+                return GM_openInTab(href, {
+                    active: false,
+                    insert: true,
+                    setParent: true,
+                });
+            }
+
+            // 兜底：如果 GM_openInTab 不可用，退回原生 window.open。
+            return window.open(href, key);
         },
         absoluteUrl(href) {
             if (!href) return '';
@@ -428,9 +466,31 @@
             ];
             return patterns.find(pattern => content.includes(pattern)) || '';
         },
+        detectPlatformLimitText(text) {
+            const content = String(text || '').replace(/\s+/g, ' ');
+            const patterns = [
+                '次数已用完',
+                '次数已达上限',
+                '达到上限',
+                '今日无法继续沟通',
+                '今日沟通次数',
+                '今日招呼次数',
+                '明日再试',
+                '明天再试',
+                '今日已达上限',
+                '沟通名额已用完',
+                '打招呼次数已用完',
+                '操作过于频繁',
+            ];
+            return patterns.find(pattern => content.includes(pattern)) || '';
+        },
         detectManualInterruption() {
             const text = document.body ? document.body.innerText : '';
             return this.detectInterruptionText(text);
+        },
+        detectPlatformLimit() {
+            const text = document.body ? document.body.innerText : '';
+            return this.detectPlatformLimitText(text);
         },
         manualInterruptionReason(value) {
             const content = String(value || '');
@@ -444,6 +504,20 @@
         },
         isManualInterruptionError(value) {
             return Boolean(this.manualInterruptionReason(value));
+        },
+        platformLimitReason(value) {
+            const content = String(value || '');
+            const detected = this.detectPlatformLimitText(content);
+            if (detected) return detected;
+            const explicit = content.match(/平台次数限制[:：]\s*([^;；\n\r]+)/);
+            if (explicit && explicit[1]) return explicit[1].trim();
+            return '';
+        },
+        isPlatformLimitError(value) {
+            return Boolean(this.platformLimitReason(value));
+        },
+        isElementMissingError(value) {
+            return String(value || '').includes('未找到目标元素');
         },
         contactedReasonFromElement(el) {
             if (!el) return '';
@@ -1033,6 +1107,8 @@
             let lastBackendControl = 'paused';
             const manualRecoveryStateKey = '__job_seeker_manual_recovery';
             let manualInterventionRetryCount = 0;
+            const pageFailureStateKey = '__job_seeker_page_failure_recovery';
+            let pageFailureRetryCount = 0;
 
             const loadManualRecoveryState = () => {
                 try {
@@ -1057,12 +1133,39 @@
                 localStorage.removeItem(manualRecoveryStateKey);
             };
 
+            const loadPageFailureState = () => {
+                try {
+                    const state = JSON.parse(localStorage.getItem(pageFailureStateKey) || '{}');
+                    if (!state || !state.timestamp || Date.now() - Number(state.timestamp) > 5 * 60 * 1000) {
+                        return {};
+                    }
+                    return state;
+                } catch (e) {
+                    return {};
+                }
+            };
+
+            const savePageFailureState = (state) => {
+                localStorage.setItem(pageFailureStateKey, JSON.stringify({
+                    ...state,
+                    timestamp: Date.now(),
+                }));
+            };
+
+            const clearPageFailureState = () => {
+                localStorage.removeItem(pageFailureStateKey);
+            };
+
             const loadedManualRecovery = loadManualRecoveryState();
             if (Number.isFinite(Number(loadedManualRecovery.nextTagIdx))) {
                 currentTagIdx = Math.max(0, Number(loadedManualRecovery.nextTagIdx));
             }
             if (Number.isFinite(Number(loadedManualRecovery.retryCount))) {
                 manualInterventionRetryCount = Math.max(0, Number(loadedManualRecovery.retryCount));
+            }
+            const loadedPageFailure = loadPageFailureState();
+            if (Number.isFinite(Number(loadedPageFailure.retryCount))) {
+                pageFailureRetryCount = Math.max(0, Number(loadedPageFailure.retryCount));
             }
 
             const scriptHeartbeatDetail = () => ({
@@ -1274,6 +1377,86 @@
                 });
             };
 
+            const resetPageFailureRecovery = async (label = '') => {
+                if (pageFailureRetryCount <= 0 && !localStorage.getItem(pageFailureStateKey)) return;
+                const previousCount = pageFailureRetryCount;
+                pageFailureRetryCount = 0;
+                clearPageFailureState();
+                await api.event('page_failure_recovery_success', label || '页面失败恢复成功，已回到正常流程', 'script', 'info', {
+                    previousCount,
+                });
+            };
+
+            const handlePageFailure = async (reason, kind = 'element_retry', sourcePage = 'search') => {
+                const finalReason = reason || '未知页面失败';
+                const isPlatformLimit = kind === 'platform_limit';
+                const retryEvent = isPlatformLimit ? 'platform_limit_retry' : 'element_retry';
+                const pauseEvent = isPlatformLimit ? 'platform_limit_pause' : 'element_retry_pause';
+                pageFailureRetryCount += 1;
+                jobHrefs = [];
+                elsLen = 0;
+                page = 0;
+                lastJobListEventKey = '';
+                if (currentJobProgress) {
+                    finishJobProgress(isPlatformLimit ? '平台限制恢复' : '元素缺失恢复');
+                }
+
+                if (pageFailureRetryCount <= 3) {
+                    const message = `${isPlatformLimit ? '平台次数限制' : '页面元素缺失'}: ${finalReason}，刷新搜索页重试 ${pageFailureRetryCount}/3`;
+                    logger.add(message);
+                    setSearchAction(message);
+                    savePageFailureState({
+                        retryCount: pageFailureRetryCount,
+                        kind,
+                        reason: finalReason,
+                    });
+                    await api.event(retryEvent, message, 'script', isPlatformLimit ? 'error' : 'info', {
+                        reason: finalReason,
+                        retryCount: pageFailureRetryCount,
+                        maxRetries: 3,
+                        sourcePage,
+                    });
+                    await api.heartbeat('search', 'running', message, {
+                        ...scriptHeartbeatDetail(),
+                        reason: finalReason,
+                        retryCount: pageFailureRetryCount,
+                        maxRetries: 3,
+                        sourcePage,
+                    });
+                    tools.openTabNSetTimestamp(SEARCHPATH.zhipin, this.targets.search, true);
+                    return true;
+                }
+
+                const message = `${isPlatformLimit ? '平台次数限制' : '页面元素缺失'}连续 3 次恢复失败，已暂停: ${finalReason}`;
+                pageFailureRetryCount = 0;
+                clearPageFailureState();
+                this.pause = true;
+                logger.setPaused(true);
+                logger.add(message);
+                setSearchAction(message);
+                await api.event(pauseEvent, message, 'script', 'error', {
+                    reason: finalReason,
+                    maxRetries: 3,
+                    sourcePage,
+                });
+                await api.heartbeat('search', 'error', message, {
+                    ...scriptHeartbeatDetail(),
+                    reason: finalReason,
+                    maxRetries: 3,
+                    sourcePage,
+                });
+                try {
+                    await api.control('pause');
+                } catch (e) {
+                    await api.event('page_failure_pause_failed', `页面失败暂停通知失败: ${e}`, 'script', 'error', {
+                        reason: finalReason,
+                        kind,
+                    });
+                }
+                lastBackendControl = 'paused';
+                return false;
+            };
+
             const handleManualInterruption = async (reason, sourcePage = 'search') => {
                 const finalReason = reason || '未知人工校验';
                 manualInterventionRetryCount += 1;
@@ -1382,6 +1565,10 @@
             const search = async (kw) => {
                 try {
                     setSearchAction(`搜索关键词: ${kw}`);
+                    const platformLimit = tools.detectPlatformLimit();
+                    if (platformLimit) {
+                        throw new Error(`平台次数限制: ${platformLimit}`);
+                    }
                     const interruption = tools.detectManualInterruption();
                     if (interruption) {
                         throw new Error(`需要人工处理: ${interruption}`);
@@ -1394,6 +1581,7 @@
                     await api.event('search_finished', `搜索已提交: ${kw}`, 'script', 'info', { keyword: kw });
                 } catch (e) {
                     if (tools.isManualInterruptionError(e)) throw e;
+                    if (tools.isPlatformLimitError(e)) throw e;
                     logger.add('搜索出错');
                     await api.event('search_failed', `搜索出错: ${e}`, 'script', 'error', { keyword: kw });
                     throw new Error('搜索出错');
@@ -1404,6 +1592,10 @@
             const getJobHrefs = async () => {
                 try {
                     setSearchAction('读取职位列表');
+                    const platformLimit = tools.detectPlatformLimit();
+                    if (platformLimit) {
+                        throw new Error(`平台次数限制: ${platformLimit}`);
+                    }
                     const interruption = tools.detectManualInterruption();
                     if (interruption) {
                         throw new Error(`需要人工处理: ${interruption}`);
@@ -1438,6 +1630,7 @@
                     return [newHrefs, hrefs];
                 } catch (e) {
                     if (tools.isManualInterruptionError(e)) throw e;
+                    if (tools.isPlatformLimitError(e)) throw e;
                     logger.add('获取职位链接出错');
                     await api.event('job_list_failed', `获取职位链接出错: ${e}`, 'script', 'error');
                     throw new Error('获取职位链接出错');
@@ -1450,6 +1643,7 @@
                 [jobHrefs, hrefs] = await getJobHrefs();
                 elsLen = hrefs.length;
                 await resetManualInterventionRecovery('人工校验恢复成功，已读取到正常职位列表');
+                await resetPageFailureRecovery('页面失败恢复成功，已读取到正常职位列表');
                 if (jobHrefs.length > 0) {
                     page++;
                     logger.add(`开始浏览第 ${page} 批`);
@@ -1503,6 +1697,10 @@
 
             // 获取职位信息
             const getJobInfo = async (href) => {
+                const platformLimit = tools.detectPlatformLimit();
+                if (platformLimit) {
+                    throw new Error(`平台次数限制: ${platformLimit}`);
+                }
                 const interruption = tools.detectManualInterruption();
                 if (interruption) {
                     throw new Error(`需要人工处理: ${interruption}`);
@@ -1530,6 +1728,7 @@
                     info = await detailResponse;
                 } catch (e) {
                     if (tools.isManualInterruptionError(e)) throw e;
+                    if (tools.isPlatformLimitError(e)) throw e;
                     await api.event(
                         'job_detail_timeout',
                         `详情页未回传职位信息: ${href}`,
@@ -1541,6 +1740,9 @@
                 }
                 if (info && info.manual_intervention) {
                     throw new Error(`需要人工处理: ${info.reason || info.error || '详情页人工校验'}`);
+                }
+                if (info && info.page_failure) {
+                    throw new Error(`${info.failure_kind === 'platform_limit' ? '平台次数限制' : '未找到目标元素'}: ${info.reason || info.error || '详情页页面失败'}`);
                 }
                 if (!info || !info.title || !info.detail) {
                     throw new Error('职位详情缺少标题或描述');
@@ -1582,6 +1784,8 @@
                     const html = await resp.text();
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const interruptionText = doc.body ? doc.body.innerText : '';
+                    const platformLimit = tools.detectPlatformLimitText(interruptionText);
+                    if (platformLimit) throw new Error(`平台次数限制: ${platformLimit}`);
                     const interruption = tools.detectInterruptionText(interruptionText);
                     if (interruption) throw new Error(`需要人工处理: ${interruption}`);
                     const info = extractJobInfoFromDocument(doc, href, 'fetch_fallback');
@@ -1595,6 +1799,13 @@
                     });
                     return info;
                 } catch (fallbackError) {
+                    if (tools.isPlatformLimitError(fallbackError)) {
+                        await api.event('job_detail_platform_limit', `详情页触发平台次数限制: ${fallbackError}`, 'script', 'error', {
+                            url: href,
+                            originalError: String(originalError),
+                        });
+                        throw fallbackError;
+                    }
                     if (tools.isManualInterruptionError(fallbackError)) {
                         await api.event('job_detail_manual_intervention', `详情页需要人工校验: ${fallbackError}`, 'script', 'error', {
                             url: href,
@@ -1611,6 +1822,16 @@
                 try {
                     return await getJobInfo(href);
                 } catch (firstError) {
+                    if (tools.isPlatformLimitError(firstError) || tools.isElementMissingError(firstError)) {
+                        await api.event(
+                            tools.isPlatformLimitError(firstError) ? 'job_detail_platform_limit' : 'job_detail_element_missing',
+                            `职位详情读取触发页面恢复: ${href}`,
+                            'script',
+                            'error',
+                            { url: href, error: String(firstError) }
+                        );
+                        throw firstError;
+                    }
                     if (tools.isManualInterruptionError(firstError)) {
                         await api.event('job_detail_manual_intervention', `职位详情触发人工校验，切换关键词恢复: ${href}`, 'script', 'error', {
                             url: href,
@@ -1626,6 +1847,16 @@
                     try {
                         return await getJobInfo(href);
                     } catch (secondError) {
+                        if (tools.isPlatformLimitError(secondError) || tools.isElementMissingError(secondError)) {
+                            await api.event(
+                                tools.isPlatformLimitError(secondError) ? 'job_detail_platform_limit' : 'job_detail_element_missing',
+                                `职位详情重试触发页面恢复: ${href}`,
+                                'script',
+                                'error',
+                                { url: href, firstError: String(firstError), secondError: String(secondError) }
+                            );
+                            throw secondError;
+                        }
                         if (tools.isManualInterruptionError(secondError)) {
                             await api.event('job_detail_manual_intervention', `职位详情重试触发人工校验，切换关键词恢复: ${href}`, 'script', 'error', {
                                 url: href,
@@ -1673,6 +1904,7 @@
                 startGreetingWait(jobInfo);
                 localStorage.setItem('__chatbot_zhou_greet_context', JSON.stringify({
                     url: href,
+                    chatUrl: jobInfo.chatUrl || '',
                     title: jobInfo.title,
                     company: jobInfo.company || '',
                     salary: jobInfo.salary || '',
@@ -1762,6 +1994,16 @@
                     }
                     await openGreetingChat(jobInfo, href, '入口请求成功或已有聊天页地址');
                 } catch (e) {
+                    if (tools.isPlatformLimitError(e)) {
+                        finishGreetingWait();
+                        await handlePageFailure(tools.platformLimitReason(e), 'platform_limit', 'chat_greet');
+                        return;
+                    }
+                    if (tools.isElementMissingError(e)) {
+                        finishGreetingWait();
+                        await handlePageFailure(String(e), 'element_retry', 'chat_greet');
+                        return;
+                    }
                     if (tools.isManualInterruptionError(e)) {
                         finishGreetingWait();
                         await handleManualInterruption(tools.manualInterruptionReason(e), 'chat_greet');
@@ -1812,6 +2054,14 @@
                     }
                     finishGreetingWait();
                     finishJobProgress(data.success ? '打招呼成功' : '打招呼失败');
+                    if (!data.success && data.error && tools.isPlatformLimitError(data.error)) {
+                        await handlePageFailure(tools.platformLimitReason(data.error), 'platform_limit', 'chat_greet');
+                        return;
+                    }
+                    if (!data.success && data.error && tools.isElementMissingError(data.error)) {
+                        await handlePageFailure(String(data.error), 'element_retry', 'chat_greet');
+                        return;
+                    }
                     if (!data.success && data.error && tools.isManualInterruptionError(data.error)) {
                         await handleManualInterruption(tools.manualInterruptionReason(data.error), 'chat_greet');
                         return;
@@ -1869,6 +2119,11 @@
                 loopRunning = true;
                 try {
                     if (waitingForGreeting) return;
+                    const platformLimit = tools.detectPlatformLimit();
+                    if (platformLimit) {
+                        await handlePageFailure(platformLimit, 'platform_limit', 'search');
+                        return;
+                    }
                     const interruption = tools.detectManualInterruption();
                     if (interruption) {
                         await handleManualInterruption(interruption, 'search');
@@ -1989,6 +2244,14 @@
                         setTimeout(loop, 0);
                     }
                 } catch (e) {
+                    if (tools.isPlatformLimitError(e)) {
+                        await handlePageFailure(tools.platformLimitReason(e), 'platform_limit', 'search');
+                        return;
+                    }
+                    if (tools.isElementMissingError(e)) {
+                        await handlePageFailure(String(e), 'element_retry', 'search');
+                        return;
+                    }
                     if (tools.isManualInterruptionError(e)) {
                         await handleManualInterruption(tools.manualInterruptionReason(e), 'search');
                         return;
@@ -2060,6 +2323,14 @@
                     // 开始循环
                     loop();
                 } catch (e) {
+                    if (tools.isPlatformLimitError(e)) {
+                        await handlePageFailure(tools.platformLimitReason(e), 'platform_limit', 'search');
+                        return;
+                    }
+                    if (tools.isElementMissingError(e)) {
+                        await handlePageFailure(String(e), 'element_retry', 'search');
+                        return;
+                    }
                     if (tools.isManualInterruptionError(e)) {
                         await handleManualInterruption(tools.manualInterruptionReason(e), 'search');
                         return;
@@ -2121,6 +2392,8 @@
 
             // 获取职位信息
             const getJobInfo = async () => {
+                const platformLimit = tools.detectPlatformLimit();
+                if (platformLimit) throw new Error(`平台次数限制: ${platformLimit}`);
                 const interruption = tools.detectManualInterruption();
                 if (interruption) throw new Error(`需要人工处理: ${interruption}`);
                 await tools.waitForOne(SELECTORS.ZHIPIN.DETAIL.JOBNAME_CANDIDATES, 20000);
@@ -2225,6 +2498,23 @@
                         });
                         setTimeout(() => window.close(), 500);
                     }
+                    const platformReason = tools.platformLimitReason(e);
+                    const elementMissing = tools.isElementMissingError(e);
+                    if ((platformReason || elementMissing) && isFromSearch) {
+                        await this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, {
+                            page_failure: true,
+                            failure_kind: platformReason ? 'platform_limit' : 'element_retry',
+                            reason: platformReason || String(e),
+                            error: String(e),
+                            source: 'detail_error',
+                        }).catch(async (sendError) => {
+                            await api.event('broadcast_send_failed', `详情页页面失败回传失败: ${sendError}`, 'script', 'error', {
+                                path: location.pathname,
+                                windowName: window.name,
+                            });
+                        });
+                        setTimeout(() => window.close(), 500);
+                    }
                     await api.heartbeat('detail', 'error', String(e), { path: location.pathname, windowName: window.name });
                     await api.event('job_detail_failed', `详情页读取失败: ${e}`, 'script', 'error', { path: location.pathname, windowName: window.name });
                 }
@@ -2244,6 +2534,8 @@
             const sendMsg = (text) => {
                 return new Promise(async (resolve, reject) => {
                     try {
+                        const platformLimit = tools.detectPlatformLimit();
+                        if (platformLimit) throw new Error(`平台次数限制: ${platformLimit}`);
                         const interruption = tools.detectManualInterruption();
                         if (interruption) throw new Error(`需要人工处理: ${interruption}`);
                         if (!String(text || '').trim()) throw new Error('发送内容为空');
@@ -2290,7 +2582,7 @@
             const sayHi = async () => {
                 startBroadcast(this.targets.chatGreet);
 
-                // 心跳 
+                // 心跳
                 let count = 0;
                 let heartbeatActive = true;
                 const loop = () => {
@@ -2525,7 +2817,22 @@
             const main = async () => {
                 // 判断来源
                 const now = new Date().getTime();
-                const isGreet = now - tools.getTimestamp(this.targets.chatGreet) < OPTIONS.timestampTimeout && window.name === this.targets.chatGreet;
+                const greetOpenedAt = tools.getTimestamp(this.targets.chatGreet);
+                const greetAge = greetOpenedAt ? now - greetOpenedAt : null;
+                let greetContext = {};
+                try {
+                    greetContext = JSON.parse(localStorage.getItem('__chatbot_zhou_greet_context') || '{}');
+                } catch (e) {
+                    greetContext = {};
+                }
+                const contextChatUrl = tools.normalUrl(greetContext.chatUrl || '');
+                const currentChatUrl = tools.normalUrl(location.href) || location.href;
+                const isLikelySameChat = contextChatUrl
+                    ? currentChatUrl.split('#')[0] === contextChatUrl.split('#')[0]
+                    : Boolean(greetContext.url || greetContext.title || greetContext.greeting);
+                const isGreet = greetAge !== null
+                    && greetAge < OPTIONS.timestampTimeout
+                    && isLikelySameChat;
 
                 if (isGreet) {
                     sayHi();

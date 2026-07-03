@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from queue import Queue
@@ -25,6 +26,7 @@ def _seconds_since(iso_time: str) -> int | None:
 class RuntimeState:
     def __init__(self) -> None:
         self.started_at = now_iso()
+        self.run_id = self._new_run_id()
         self.current_task = "idle"
         self.control = "paused"
         self.last_error = ""
@@ -42,6 +44,9 @@ class RuntimeState:
         self.events: deque[dict[str, Any]] = deque(maxlen=500)
         self._subscribers: list[Queue] = []
 
+    def _new_run_id(self) -> str:
+        return f"run-{uuid.uuid4().hex[:12]}"
+
     def log(self, message: str, level: str = "info", source: str = "backend") -> dict[str, Any]:
         return self.emit("log", message, source=source, level=level)
 
@@ -55,6 +60,7 @@ class RuntimeState:
     ) -> dict[str, Any]:
         item = {
             "time": now_iso(),
+            "run_id": self.run_id,
             "level": level,
             "source": source,
             "type": event_type,
@@ -88,6 +94,8 @@ class RuntimeState:
 
     def update_script(self, page: str, status: str, current_action: str = "", detail: dict[str, Any] | None = None) -> None:
         previous = dict(self.script)
+        detail = dict(detail or {})
+        detail.setdefault("backendRunId", self.run_id)
         self.script = {
             "connected": True,
             "page": page,
@@ -96,7 +104,7 @@ class RuntimeState:
             "last_seen": now_iso(),
             "stale": False,
             "heartbeat_age_seconds": 0,
-            "detail": detail or {},
+            "detail": detail,
         }
         if (
             previous.get("page") != page
@@ -135,6 +143,8 @@ class RuntimeState:
             self.control = "paused"
             self.current_task = "paused"
         elif command == "resume":
+            if self.control == "stopped" or not self.run_id:
+                self.run_id = self._new_run_id()
             self.control = "running"
             self.current_task = "idle"
         elif command == "stop":
@@ -146,6 +156,7 @@ class RuntimeState:
         should_start = self.control == "running"
         return {
             "control": self.control,
+            "run_id": self.run_id,
             "current_task": self.current_task,
             "script": self.script_snapshot(),
             "should_start": should_start,
@@ -219,11 +230,44 @@ class RuntimeState:
             result["error"] = str(exc)
             return result
 
-    def as_dict(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
+    def agent_summary(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
+        script = self.script_snapshot()
+        detail = script.get("detail") or {}
+        if not resume_status.get("saved"):
+            next_action = "prepare_resume"
+        elif not cache_status.get("profile_generated"):
+            next_action = "generate_profile"
+        elif not script.get("connected"):
+            next_action = "refresh_boss_page"
+        elif self.control == "paused":
+            next_action = "start"
+        elif self.control == "stopped":
+            next_action = "start_new_session"
+        elif self.last_error:
+            next_action = "inspect_logs"
+        else:
+            next_action = "wait"
         return {
+            "ok": True,
+            "control": self.control,
+            "run_id": self.run_id,
+            "script_online": bool(script.get("connected")),
+            "script_version": detail.get("version", ""),
+            "script_page": script.get("page", "unknown"),
+            "script_status": script.get("status", "offline"),
+            "script_action": script.get("current_action", ""),
+            "session_greet_count": detail.get("sessionGreetCount", 0),
+            "session_greet_limit": detail.get("sessionGreetLimit", Config.session_greet_limit),
+            "last_error": self.last_error,
+            "next_action": next_action,
+        }
+
+    def as_dict(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
+        status = {
             "backend": {
                 "running": True,
                 "started_at": self.started_at,
+                "run_id": self.run_id,
                 "version": "2026.06-cli",
                 "current_task": self.current_task,
                 "control": self.control,
@@ -251,6 +295,8 @@ class RuntimeState:
             "cache": cache_status,
             "script": self.script_snapshot(),
         }
+        status["agent"] = self.agent_summary(resume_status, cache_status)
+        return status
 
 
 runtime_state = RuntimeState()

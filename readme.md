@@ -1,24 +1,31 @@
 # Job Seeker
 
-Job Seeker 是一个本地运行的 AI 求职助手，当前入口是命令行控制台。
+Job Seeker 是一个本地运行的 AI 求职助手。它同时面向两类使用者：
 
-它包含：
+- 人工用户：通过命令行控制台完成初始化、确认简历/画像/话术、查看日志、启动或暂停自动化。
+- Agent 用户：通过稳定 JSON CLI、HTTP API 或 MCP 工具读取状态、诊断问题、调整安全配置、启动或停止流程。
 
-- FastAPI 本地服务，供篡改猴脚本调用
-- CLI 控制台，展示完整执行过程和确认队列
-- Ollama 本地模型调用
-- PDF 简历上传、提取、编辑和缓存
-- 打招呼话术生成、确认和自动化执行控制
+项目默认只在本机运行：
 
-默认本地服务地址：
-
-```powershell
+```text
 http://127.0.0.1:33333
 ```
 
+## 项目组成
+
+- `main.py`：FastAPI 服务入口、人工 CLI 入口、agent/MCP 入口。
+- `cli_console.py`：人工命令行控制台。
+- `agent_cli.py`：Hermes、OpenClaw 等 agent 调用的 JSON CLI。
+- `agent_service.py`：统一 agent 契约、readiness、diagnose、安全配置白名单。
+- `mcp_server.py`：MCP 薄适配层，只包装同一套 agent 能力。
+- `web_script.js`：BOSS 直聘页面中的油猴脚本。
+- `core.py` / `model_stream.py`：模型调用、岗位评分、流式输出、重试与重复检测。
+- `database.py`：SQLite 历史、动作和事件记录。
+- `data/`：本地个人数据目录，不应提交到仓库。
+
 ## 安装
 
-建议在独立虚拟环境中安装依赖：
+建议使用独立虚拟环境：
 
 ```powershell
 python -m venv .venv
@@ -26,63 +33,60 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## 准备 Ollama
-
-安装并启动 Ollama，然后拉取配置中的模型。默认模型是：
+默认模型是 Ollama 的 `qwen3:4b`：
 
 ```powershell
 ollama pull qwen3:4b
 ```
 
-也可以在 CLI 配置向导中选择 `openai`，接入 OpenAI Chat Completions 接口。需要填写：
+也可以在人工 CLI 的 `config` 向导中选择 `openai`，接入 OpenAI-compatible Chat Completions API。API Key 只保存在本地 `data/config.json`，状态输出会脱敏。
 
-- OpenAI API 地址，例如 `https://api.openai.com/v1`
-- API Key
-- 模型名称
+## 5 分钟人工启动
 
-API Key 只保存在本地 `data/config.json`，CLI 的 `status`、`doctor` 和 API 返回会脱敏展示。
-
-## 启动
-
-推荐直接双击项目根目录中的：
+最简单方式是双击：
 
 ```text
 start_job_seeker.bat
 ```
 
-一键启动器会自动完成：
+启动器会：
 
 1. 切换到项目目录并设置 UTF-8 控制台。
-2. 优先使用 `.venv\Scripts\python.exe`，没有虚拟环境时提示并改用系统 Python。
-3. 检查 Python 依赖、端口占用和当前模型服务配置。
-4. 启动 Job Seeker CLI。
-5. 本地 API 就绪后自动打开油猴脚本安装/更新页和 BOSS 搜索页。
+2. 优先使用 `.venv\Scripts\python.exe`。
+3. 检查 Python 依赖、端口占用和模型服务配置。
+4. 启动人工 CLI。
+5. API 就绪后尝试打开油猴脚本安装页和 BOSS 搜索页。
 
-如果端口已被正在运行的 Job Seeker 占用，启动器不会重复启动后端，只会提示并打开页面；如果端口被其他程序占用，会停止并提示修改端口或关闭占用程序。
-
-手动启动方式仍然可用：
+也可以手动启动：
 
 ```powershell
 python main.py
 ```
 
-首次启动或缺少配置、简历、画像、话术时，CLI 会自动进入初始化向导。
+首次启动或缺少配置时，CLI 会引导你完成：
 
-初始化流程：
-
-1. 配置模型来源、Ollama 或 OpenAI、模型名、端口、阈值和本次打招呼上限。
+1. 配置模型来源、模型名称、端口、岗位评分阈值和本轮打招呼上限。
 2. 输入 PDF 简历路径。
-3. 系统提取 PDF 文本并生成 `data/resume/resume.md`。
-4. 系统打开编辑器，用户确认并保存简历内容。
-5. 系统分别生成职位标签和用户详情。
-6. 系统打开编辑器，用户先确认岗位搜索标签，再确认用户详情内容。
-7. 系统生成打招呼草稿，用户确认启用打招呼话术。
-8. CLI 打印运行摘要，进入待启动状态。
+3. 提取 PDF 文本并生成 `data/resume/resume.md`。
+4. 打开编辑器，由人工确认简历内容。
+5. 生成岗位标签和用户画像。
+6. 打开编辑器，由人工确认岗位标签和用户画像。
+7. 生成打招呼草稿，由人工确认启用。
+8. 进入待启动状态。
 
-## CLI 命令
+然后在 CLI 中输入：
 
 ```text
-status        显示系统状态
+script
+start
+```
+
+`script` 会显示油猴脚本安装/更新地址。安装或更新脚本后，刷新 BOSS 搜索页，等 CLI 显示脚本心跳，再输入 `start` 开始。
+
+## 人工 CLI 命令
+
+```text
+status        显示系统状态和 agent 卡点
 config        重新配置基础参数
 resume        重新上传或编辑简历
 tags          编辑岗位搜索标签
@@ -93,132 +97,409 @@ stop          停止自动化
 actions       处理待确认动作
 history       显示最近历史
 logs          显示最近日志
-script        显示篡改猴脚本安装/更新地址
-doctor        检查依赖、Ollama 和油猴连接
+script        显示油猴脚本安装/更新地址
+doctor        检查依赖、模型服务、油猴连接和 agent 就绪状态
 help          显示帮助
 quit          退出 CLI
 ```
 
-## 执行过程展示
+人工 CLI 会展示服务启动、脚本心跳、页面动作、岗位详情、模型评分、推荐结果、打招呼状态、SQLite 落库和错误恢复信息。默认日志模式为 `compact`；排查问题时可以在 `config` 中改为 `debug`。
 
-CLI 会展示：
+## Agent 快速开始
 
-- 服务启动、配置加载、初始化检查
-- 脚本心跳、页面类型、当前动作
-- 搜索关键词、关键词轮询、职位详情
-- 历史去重、基于用户画像的三项评分和系统加权匹配度
-- 模型调用状态；默认隐藏模型返回的 `<think>` 思考内容
-- 学历专业评分、技术栈评分、项目经验评分、加权匹配度、推荐动作和跳过原因
-- 打招呼、官方简历附件请求和发送结果
-- SQLite 落库、错误与恢复信息
+Agent 推荐使用非交互模式：
 
-默认日志模式为 `compact`，会隐藏重复心跳和低价值脚本状态；`logs` 命令仍可查看完整事件。需要排查问题时，可在 `config` 中把日志模式改为 `debug`，并选择显示模型思考过程。
+```powershell
+python main.py serve
+```
 
-错误日志和关键脚本事件会额外显示 `[详情]`，其中包含输入框、发送按钮、详情页链接、心跳版本等诊断信息。
+然后在另一个终端调用：
 
-注意：CLI 展示的是 Job Seeker 调用本地 Ollama 模型实际返回的内容和系统决策依据，不展示本助手内部推理。
+```powershell
+python main.py agent diagnose --json
+```
 
-## 自动行为边界
+常用命令：
 
-系统统一使用自动模式：岗位达到阈值后自动打招呼，不自动文字回复，不自动发送联系方式或作品集。
+```powershell
+python main.py agent status --json
+python main.py agent diagnose --json
+python main.py agent configure --set session_greet_limit=20 --set score_threshold=75 --json
+python main.py agent configure --tags "Python后端,FastAPI,AI应用" --json
+python main.py agent start --json
+python main.py agent pause --json
+python main.py agent stop --json
+python main.py agent wait --until ready --timeout 120 --json
+python main.py agent wait --until script_online --timeout 120 --json
+python main.py agent logs --level error --json
+python main.py agent history --limit 20 --json
+python main.py agent actions --json
+```
 
-聊天页不做自动文字沟通；仅当 BOSS 官方卡片明确索要附件简历并且卡片内存在“同意”按钮时，脚本自动点击同意并记录历史。
+退出码约定：
 
-## 篡改猴脚本
+- `0`：命令成功。
+- `1`：运行错误或启动条件不满足。
+- `2`：参数或配置错误。
+- `3`：等待超时。
 
-推荐在 CLI 输入 `script`，复制显示的安装地址到浏览器打开，例如：
+如果端口上跑的是旧服务，agent 命令会提示当前服务不支持 `/agent` 契约。此时先关闭旧进程，再重新运行 `python main.py serve` 或 `python main.py`。
+
+## Agent JSON 契约
+
+所有 agent 命令返回统一 JSON envelope：
+
+```json
+{
+  "ok": true,
+  "ready": false,
+  "control": "paused",
+  "run_id": "run-xxxxxxxxxxxx",
+  "readiness": {},
+  "missing_requirements": ["script_offline"],
+  "human_required": true,
+  "next_action": "refresh_boss_page",
+  "suggested_command": "python main.py agent wait --until script_online --timeout 120 --json",
+  "script": {},
+  "model": {},
+  "session": {},
+  "last_error": "",
+  "data": {}
+}
+```
+
+关键字段：
+
+- `ok`：当前命令是否执行成功。
+- `ready`：当前保存状态是否满足 agent 启动条件。
+- `control`：后端控制状态，可能是 `paused`、`running`、`stopped`。
+- `run_id`：当前后端运行轮次标识，用于聚合日志、心跳和历史。
+- `readiness`：完整就绪检查结果。
+- `missing_requirements`：机器可读缺失项。
+- `human_required`：是否需要人工接管。
+- `next_action`：推荐下一步语义动作。
+- `suggested_command`：推荐下一条命令或人工动作。
+- `script`：油猴脚本连接、页面、动作、心跳和脚本详情。
+- `model`：模型服务状态。
+- `session`：本轮打招呼计数、上限和脚本 run id。
+- `last_error`：最近错误。
+- `data`：完整原始状态和命令结果。
+
+常见 `missing_requirements`：
+
+- `resume_missing`：简历尚未保存或确认，需要人工 CLI。
+- `profile_missing`：用户画像尚未生成或确认，需要人工 CLI。
+- `greeting_missing`：打招呼话术尚未确认，需要人工 CLI。
+- `script_offline`：油猴脚本未连接或心跳过期，需要刷新 BOSS 页面。
+- `openai_api_key_missing`：OpenAI 模式缺少 API Key，需要人工配置。
+- `model_unavailable`：模型服务不可用，需要人工检查 Ollama 或 API 配置。
+
+`diagnose` 是 agent 首选命令。它会一次性返回 readiness、最近错误、建议命令和完整状态。
+
+## Agent 安全配置
+
+`agent configure` 只允许写非密钥运行/模型配置和岗位标签。
+
+允许字段包括：
+
+- `tags` / `job_tags`
+- `score_threshold`
+- `session_greet_limit`
+- `log_verbosity`
+- `skip_contacted_companies`
+- `max_contacts_per_company`
+- `job_detail_max_chars`
+- `model_provider`
+- `ollama_host`
+- `openai_api_base`
+- `think_model`
+- `disable_model_thinking`
+- `show_model_reasoning`
+- `external_model_profile`
+- `model_temperature`
+- `model_top_p`
+- `model_repeat_penalty`
+- `model_repeat_last_n`
+- `model_frequency_penalty`
+- `model_presence_penalty`
+
+明确拒绝 agent 写入：
+
+- API Key
+- 简历正文
+- 用户画像正文
+- 打招呼话术正文
+- SQLite 历史
+- 动作审批结果
+- 数据库内容
+
+这样 agent 可以配置和启动流程，但不会替代人工确认隐私内容。
+
+## MCP 使用
+
+安装 `requirements.txt` 中的 `mcp` 依赖后，可以启动 MCP 薄适配层：
+
+```powershell
+python main.py mcp
+```
+
+MCP 面向 stdio client。Hermes 等 MCP client 可以在需要时启动这个命令，用完关闭连接；MCP 进程退出时，它内嵌启动的 API 也会一起退出。
+
+`python main.py mcp` 会先检查本地 API 是否已经可用：
+
+- 如果当前端口已经有新版 `/agent/*` API，它会复用现有服务。
+- 如果没有 API，它会在同一个进程内启动一个后台 FastAPI 服务。
+- 如果端口被旧服务占用，MCP 工具会返回旧服务不支持 `/agent` 契约的错误，需先关闭旧进程。
+
+对于只读状态、诊断、配置这类短任务，agent 可以按需启动 MCP，用完即退出。对于已经启动浏览器自动化的长任务，agent 应保持 MCP 连接，至少等到 `jobseeker_wait` 返回完成、暂停或停止后再退出。
+
+MCP 工具只包装同一套 `/agent/*` 能力，不复制业务逻辑：
+
+- `jobseeker_status`
+- `jobseeker_diagnose`
+- `jobseeker_configure`
+- `jobseeker_start`
+- `jobseeker_pause`
+- `jobseeker_stop`
+- `jobseeker_wait`
+- `jobseeker_logs`
+- `jobseeker_history`
+
+如果未安装 MCP 依赖，`python main.py mcp` 会以退出码 `2` 给出提示；此时仍可继续使用 `python main.py agent ...`。
+
+## HTTP API
+
+原有人工和脚本 API 保持兼容：
+
+- `GET /status`
+- `GET /config`
+- `POST /config`
+- `POST /script/heartbeat`
+- `POST /control`
+- `POST /jobs/analyze`
+- `POST /actions`
+- `GET /actions/pending`
+- `GET /history`
+- `GET /tags`
+- `GET /get-introduce`
+- `GET /web_script.user.js`
+
+Agent API：
+
+- `GET /agent/status`
+- `GET /agent/diagnose`
+- `POST /agent/configure`
+- `POST /agent/start`
+- `POST /agent/pause`
+- `POST /agent/stop`
+- `GET /agent/logs`
+- `GET /agent/history`
+- `GET /agent/actions`
+
+## 自动化运行过程
+
+运行时的主要链路是：
+
+1. 人工 CLI 或 agent 启动本地 FastAPI 服务。
+2. 油猴脚本在 BOSS 页面上报 `/script/heartbeat`。
+3. 后端返回 `control`，脚本根据 `paused`、`running`、`stopped` 决定是否行动。
+4. 脚本按岗位标签搜索职位。
+5. 脚本读取职位列表，打开详情页。
+6. 脚本把职位信息提交到 `/jobs/analyze`。
+7. 后端读取已确认用户画像和话术，调用模型评分。
+8. 模型返回学历专业、技术栈、项目经验三项评分。
+9. 后端按权重计算总匹配度并返回推荐动作。
+10. 达到阈值且未触发历史/公司限制时，脚本打开聊天页并发送已确认话术。
+11. 动作、职位、事件和错误写入 SQLite。
+12. 达到本轮上限、遇到平台限制或用户暂停时停止继续动作。
+
+## 岗位评分逻辑
+
+岗位分析当前使用单次三项评分：
+
+- 学历专业
+- 技术栈
+- 项目经验
+
+模型必须返回标准三项分数。系统再计算加权匹配度：
+
+- 技术栈：50%
+- 项目经验：35%
+- 学历专业：15%
+
+当总分大于等于 `score_threshold` 时推荐 `greet`，否则推荐 `skip`。
+
+模型调用支持：
+
+- Ollama
+- OpenAI-compatible API
+- 流式输出
+- 思考内容隐藏或显示
+- 180 秒单次超时
+- 最多 3 次重试
+- 重复循环检测
+- OpenAI 不支持参数时自动移除该参数重试
+- 岗位评分拿到标准三项结果后提前停止读取
+
+## 油猴脚本
+
+推荐在人工 CLI 输入：
+
+```text
+script
+```
+
+复制显示的安装地址到浏览器打开，例如：
 
 ```text
 http://127.0.0.1:33333/web_script.user.js
 ```
 
-篡改猴会提示安装或更新脚本。通过本地地址安装时，后端会按当前端口和主机动态写入 `serverHost`、`@updateURL`、`@downloadURL` 和 `@connect`。
-无法通过本地地址安装时，再手动将 `web_script.js` 内容复制到篡改猴脚本中。
-`script` 只更新浏览器里的油猴脚本；如果修改了 Python 后端文件，必须退出并重新运行 `python main.py`，重启后 CLI 应显示当前岗位评分版本。
+通过本地地址安装时，后端会按当前端口和主机动态写入：
 
-脚本会连接：
+- `serverHost`
+- `@updateURL`
+- `@downloadURL`
+- `@connect`
 
-```text
-http://127.0.0.1:33333
-```
-
-脚本头部需要保留以下权限，否则浏览器可能拦截本地 API 请求：
+脚本头部必须保留本地连接权限：
 
 ```text
 // @connect      127.0.0.1
 // @connect      localhost
 ```
 
-当前推荐流程：
+如果更新了 Python 后端文件，需要重启 `python main.py` 或 `python main.py serve`。如果只更新油猴脚本，需要在浏览器中重新安装或更新脚本，并刷新 BOSS 页面。
 
-1. 双击 `start_job_seeker.bat`，等待 CLI 启动。
-2. 在浏览器中确认油猴脚本已安装或更新。
-3. 刷新 BOSS 搜索页，等待 CLI 显示脚本心跳。
-4. 在 CLI 输入 `start`，先确认本轮岗位标签和本次打招呼上限，再开始自动搜索、分析职位和打招呼。
-5. 使用 `pause` 暂停下一步动作，使用 `stop` 停止自动化。
+## 自动行为边界
 
-脚本检测到安全验证、访问异常、登录过期或明确的滑动/图形验证码页面时，会先刷新回搜索页并切换到下一个岗位关键词恢复，连续 3 次恢复失败后才暂停并提示人工处理；不会尝试绕过平台验证。
+系统只辅助岗位搜索、岗位评分和已确认话术的打招呼：
 
-常见排查：
+- 岗位达到阈值后可以自动打招呼。
+- 不自动进行后续文字沟通。
+- 不自动发送联系方式。
+- 不自动发送作品集。
+- 不绕过验证码、登录、风控或平台限制。
+- 仅当 BOSS 官方附件简历请求卡片明确出现，且卡片内存在“同意”按钮时，脚本才会点击同意并记录历史。
 
-- 如果 CLI 没有出现 `脚本就绪: 2026.06-cli-autogreet.19`，说明油猴脚本没有更新或没有连接到本地 API；优先运行 `script` 并通过本地安装地址更新。
-- 如果出现 `未匹配页面路径: /xian/` 这类城市首页日志，请更新脚本到 `2026.06-cli-autogreet.19`；新版会自动进入标准职位搜索页。
-- 如果出现 `接收超时: get-job-info`，请更新脚本到 `2026.06-cli-autogreet.19`；新版把详情页来源有效期放宽到 120 秒，并且脚本打开的详情窗口会按窗口名回传职位信息。
-- 如果 CLI 报 `验证码` 但页面肉眼没有验证码，请更新到 `2026.06-cli-autogreet.19`；新版不再因为普通“验证码”文案误判，只在明确的验证/风控页面触发恢复或暂停。
-- 如果出现 `需要人工校验`，脚本会自动切换到下一个岗位关键词并回到搜索页，连续 3 次恢复失败后才会暂停。
-- 本次打招呼上限按一轮自动化运行计数，`pause/start` 继续同一轮不清零；`stop` 后下一次 `start` 会开启新一轮并清零。达到上限后脚本会通知后端进入 `stopped`，不再继续打开岗位或调用模型。
-- 每轮 `start` 前会打开岗位标签文件供用户确认/修改，并询问本次最多打招呼数量。
-- 搜索页不再滚动加载更多岗位；当前关键词没有新职位时直接切换到下一个岗位标签，最后一个关键词结束后回到第一个关键词继续轮询。
-- 油猴窗口的 `[进度]` 只在职位处理完成后更新；平均耗时按已完成岗位计算，累计耗时从本轮真正启动开始计算。
-- 岗位分析当前使用单次三项评分，输入为岗位详情和已确认用户画像，模型必须严格返回“学历专业/技术栈/项目经验”三行分数，最终匹配度由系统加权计算。
-- 模型思考由 `config` 中的“是否关闭模型思考”全局控制，画像、话术和岗位评分都会遵循该设置；“是否显示模型思考过程”只控制 CLI 是否打印模型返回的思考内容。
-- 所有模型调用单次超时为 180 秒，超时或请求异常后最多重试 3 次；超时、重试和最终失败都会写入 CLI 日志。
-- `config` 可选择配置高级模型参数：`temperature`、`top_p`、Ollama 的 `repeat_penalty/repeat_last_n`，以及 OpenAI 的 `frequency_penalty/presence_penalty`。
-- 如果模型输出疑似重复循环，系统会停止当前调用并按现有重试次数重试；重试时不更换提示词，只逐次增强重复惩罚参数。
-- 岗位评分一旦拿到严格三行分数，会提前结束模型读取并由系统计算加权分，避免小模型继续重复输出。
-- 如果详情页广播超时但同源解析成功，CLI 会显示 `详情页兜底解析成功`；如果随后提示缺少打招呼链接，说明详情 HTML 中没有可用的聊天入口，需要看 `greet_unavailable` 历史动作。
-- 如果 CLI 显示 `打招呼入口请求成功`，说明已正常进入 BOSS 聊天入口流程；随后应看到 `打开聊天页准备打招呼` 和 `打招呼消息已发送`。
-- 如果 CLI 显示 `入口请求失败，尝试直接打开聊天页`，说明脚本会用页面上已有聊天地址做正常兜底；若仍失败，查看 `message_send_failed` 的具体原因。
-- 如果 CLI 显示 `message_send_failed`，新版事件会带输入框和发送按钮的标签、类名、可见性与禁用状态，通常可以判断是页面选择器变化、输入框未写入，还是发送按钮不可用。
-- 如果 CLI 显示 `打招呼页心跳失联` 或 `聊天页心跳失联`，通常是搜索页被关闭、刷新、浏览器限制了跨标签广播，或油猴脚本版本不一致；刷新搜索页后重新输入 `start`。
-- 如果 `status` 或 `doctor` 显示 `心跳过期`，说明后端记得上一次脚本连接，但当前页面已经停止上报；刷新 BOSS 搜索页，等出现新的脚本心跳后再输入 `start`。
-- 如果 CLI 显示 `浏览器拦截了聊天页弹窗`，请允许 `zhipin.com` 弹出窗口后重试。
-- 如果 CLI 显示 `浏览器拦截了职位详情页弹窗`，脚本会尝试直接解析详情页 HTML；若解析失败，请允许职位详情弹窗。
-- 如果当前聊天页出现 BOSS 官方附件简历请求卡片，脚本只会点击该卡片内的“同意”；普通文字提到“简历”或工具栏简历按钮不会触发发送。
-- 如果 CLI 多次显示 `发现职位链接 N 个，新职位 0 个`，说明当前关键词已经没有本轮未处理的新职位；脚本会切换到下一个岗位标签。
-- 如果详情页启动了但仍失败，查看 CLI 中的 `job_detail_failed` 事件，通常是 BOSS 页面选择器变化或页面还在安全验证。
+安全验证、登录过期、访问异常、滑动/图形验证码、平台次数限制、关键输入框/按钮连续找不到时，脚本会刷新搜索页或暂停，并要求人工处理。
 
-## 配置文件说明
-
-配置文件位于 `data/` 目录，首次运行后自动生成。也可以手动创建或修改：
-
-| 文件                        | 说明         | 修改方式                                                 |
-| --------------------------- | ------------ | -------------------------------------------------------- |
-| `data/config.json`          | 主配置文件   | 参考 `config.example.json`，修改后运行 `config` 命令生效 |
-| `data/resume/resume.md`     | 简历内容     | 直接编辑，或运行 `resume` 命令重新上传                   |
-| `data/cache/user_detail.md` | 用户画像详情 | 参考 `user_detail.example.md` 格式，直接编辑             |
-| `data/cache/greeting.json`  | 打招呼话术   | 参考 `greeting.example.json` 格式，直接编辑              |
-
-预设配置存在时系统直接工作，可通过 `config`/`resume`/`greeting` 等命令按需调整。
-
-## 数据目录
+## 本地数据
 
 运行数据保存在 `data/`：
 
-- `data/config.json`
-- `data/resume/original.pdf`
-- `data/resume/extracted.txt`
-- `data/resume/resume.md`
-- `data/cache/profile.json`
-- `data/cache/user_detail.md`
-- `data/cache/greeting.json`
-- `data/app.db`
+- `data/config.json`：主配置和本地 API Key。
+- `data/app.db`：SQLite 历史、动作和事件。
+- `data/resume/original.pdf`：原始 PDF 简历。
+- `data/resume/extracted.txt`：PDF 提取文本。
+- `data/resume/resume.md`：人工确认后的简历。
+- `data/cache/profile.json`：画像缓存。
+- `data/cache/tags.txt`：岗位标签。
+- `data/cache/user_detail.md`：用户画像详情。
+- `data/cache/greeting.json`：打招呼话术。
 
-这些文件是本地个人数据，不建议提交到代码仓库。
+这些文件包含个人数据，已通过 `.gitignore` 忽略，不建议提交。
 
+## 常见排查
 
-## 致谢与来源说明
+### Agent 命中旧服务
 
-本项目基于 [goodjobs](https://github.com/gbcdby/goodjobs) 进行修改和再发布，原作者为 嘎嘣脆的贝爷。
+现象：`python main.py agent diagnose --json` 提示当前端口上的服务不支持 `/agent` 接口。
+
+原因：33333 端口上可能还跑着旧版服务。
+
+处理：
+
+1. 关闭旧的 `python main.py` 或 `python main.py serve` 进程。
+2. 重新启动当前代码：
+
+```powershell
+python main.py serve
+```
+
+### 油猴脚本离线
+
+现象：`missing_requirements` 包含 `script_offline`，或 CLI 显示脚本离线/心跳过期。
+
+处理：
+
+1. 在 CLI 输入 `script`。
+2. 重新安装或更新油猴脚本。
+3. 刷新 BOSS 搜索页。
+4. 等待 CLI 显示脚本心跳。
+
+### 模型不可用
+
+Ollama 模式：
+
+```powershell
+ollama serve
+ollama pull qwen3:4b
+python main.py
+```
+
+OpenAI-compatible 模式：
+
+1. 在人工 CLI 中运行 `config`。
+2. 填写 API Base、API Key 和模型名称。
+3. 运行 `doctor` 检查。
+
+### 打招呼没有发生
+
+常见原因：
+
+- 岗位评分低于阈值。
+- 公司或职位已联系过。
+- 本轮打招呼达到上限。
+- 聊天入口缺失。
+- 页面元素选择器变化。
+- 浏览器拦截弹窗。
+- 脚本心跳失联。
+
+建议查看：
+
+```powershell
+python main.py agent logs --level error --json
+```
+
+或在人工 CLI 中输入：
+
+```text
+logs
+history
+doctor
+```
+
+### 平台限制或验证码
+
+脚本不会绕过平台验证。遇到验证码、登录过期、访问异常、次数限制或风控页面时，系统会暂停或重试有限次数，并要求人工处理。
+
+## 开发验证
+
+Python 静态检查：
+
+```powershell
+$files = Get-ChildItem -File -Filter *.py | ForEach-Object { $_.FullName }
+python -m py_compile $files
+```
+
+油猴脚本语法检查：
+
+```powershell
+node --check web_script.js
+```
+
+Agent API 快速检查：
+
+```powershell
+python main.py serve
+python main.py agent diagnose --json
+python main.py agent configure --set session_greet_limit=20 --json
+python main.py agent start --json
+```
+
+## 致谢与来源
+
+本项目基于 [goodjobs](https://github.com/gbcdby/goodjobs) 修改和再发布，原作者为嘎嘣脆的贝爷。
 
 原项目采用 MIT License。本仓库保留原作者版权声明，并对当前版本的修改部分增加 Chatbot-Zhou 的修改版权声明。

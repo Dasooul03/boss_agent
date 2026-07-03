@@ -17,6 +17,7 @@ from urllib.request import urlopen
 import database
 import greeting_service
 import resume_service
+from agent_service import diagnose_payload
 from cache import cache
 from config import CONFIG_WAS_MISSING, Config
 from runtime_state import runtime_state
@@ -550,6 +551,10 @@ def show_status() -> None:
     print(f"- 控制: {status['backend']['control']}")
     model_status = status["ollama"]
     print(f"- 模型服务状态: {'可用' if model_status.get('available') else '不可用'}")
+    agent = diagnose_payload()
+    if not agent.get("ready"):
+        print(f"- Agent 卡点: {', '.join(agent.get('missing_requirements') or []) or agent.get('last_error') or '未知'}")
+        print(f"- Agent 建议: {agent.get('suggested_command')}")
 
 
 def show_control_result(command: str) -> None:
@@ -683,6 +688,11 @@ def show_doctor() -> None:
     print(f"- 简历画像: {'已生成' if cache.cache_status()['profile_generated'] else '未生成'}")
     print(f"- 用户详情: {'已确认' if cache.user_detail.strip() else '未确认'}")
     print(f"- 打招呼话术: {'已确认' if greeting.get('confirmed') else '未确认'}")
+    agent = diagnose_payload()
+    print(f"- Agent 就绪: {'是' if agent.get('ready') else '否'}")
+    if not agent.get("ready"):
+        print(f"  卡点: {', '.join(agent.get('missing_requirements') or []) or agent.get('last_error') or '未知'}")
+        print(f"  建议: {agent.get('suggested_command')}")
 
 
 def show_help() -> None:

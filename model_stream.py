@@ -139,6 +139,14 @@ def openai_payload_options(options: dict[str, Any] | None) -> dict[str, Any]:
     return payload
 
 
+def unsupported_openai_parameter(payload: dict[str, Any], error_body: str) -> str:
+    text = (error_body or "").lower()
+    for key in ("frequency_penalty", "presence_penalty", "top_p", "temperature"):
+        if key in payload and key.lower() in text:
+            return key
+    return ""
+
+
 def should_disable_thinking(options: dict[str, Any] | None) -> bool:
     options = options or {}
     if "think" in options:
@@ -237,6 +245,18 @@ def iter_openai_chat_chunks(
             )
             retry_options = dict(options or {})
             retry_options["disable_thinking"] = False
+            yield from iter_openai_chat_chunks(messages, model, retry_options)
+            return
+        unsupported_key = unsupported_openai_parameter(payload, body)
+        if unsupported_key:
+            runtime_state.emit(
+                "model_parameter_fallback",
+                f"OpenAI 模型不支持参数 {unsupported_key}，已移除后重试",
+                source="model",
+                detail={"parameter": unsupported_key, "model": model},
+            )
+            retry_options = dict(options or {})
+            retry_options.pop(unsupported_key, None)
             yield from iter_openai_chat_chunks(messages, model, retry_options)
             return
         raise RuntimeError(f"OpenAI 请求失败: HTTP {exc.code} {body[:500]}") from exc
@@ -436,16 +456,28 @@ def compact_model_text(value: str, limit: int = 120) -> str:
     return text[:limit]
 
 
-class RepetitionDetector:
+class ModelProgressGuard:
     def __init__(self) -> None:
         self._last_chunk = ""
         self._same_chunk_count = 0
+        self._last_visible_length = 0
+        self._raw_since_visible_progress = 0
 
     @staticmethod
     def _normalize(value: str) -> str:
         return re.sub(r"\s+", "", value or "")
 
     def feed(self, chunk: str, content: str) -> str:
+        visible_text = visible_model_text(content)
+        visible_length = len(self._normalize(visible_text))
+        if visible_length > self._last_visible_length:
+            self._last_visible_length = visible_length
+            self._raw_since_visible_progress = 0
+        else:
+            self._raw_since_visible_progress += len(chunk or "")
+            if "<think>" in (content or "") and self._raw_since_visible_progress >= 3500:
+                return "思考段长时间无有效输出"
+
         normalized_chunk = self._normalize(chunk)
         if len(normalized_chunk) >= 8 and normalized_chunk == self._last_chunk:
             self._same_chunk_count += 1
@@ -463,6 +495,10 @@ class RepetitionDetector:
             return ""
 
         tail = text[-700:]
+        if len(tail) >= 240:
+            unique_ratio = len(set(tail)) / max(1, len(tail))
+            if unique_ratio < 0.06:
+                return f"低信息增量: {tail[-40:]}"
         for size in range(12, 121):
             unit = tail[-size:]
             if len(set(unit)) <= 1:
@@ -477,6 +513,9 @@ class RepetitionDetector:
             if spaced_tail.count(last) >= 4:
                 return f"重复句子: {last[:60]}"
         return ""
+
+
+RepetitionDetector = ModelProgressGuard
 
 
 class ModelChunkPrinter:
@@ -614,7 +653,7 @@ def stream_ollama_chat(
         stop_event = threading.Event()
         start_worker(result_queue, stop_event, attempt_options)
         content = ""
-        detector = RepetitionDetector()
+        guard = ModelProgressGuard()
         printer = ModelChunkPrinter(show_reasoning=show_reasoning)
         started_at = time.monotonic()
         has_chunk = False
@@ -682,15 +721,15 @@ def stream_ollama_chat(
                         print("", flush=True)
                         runtime_state.emit(
                             "model_early_stop",
-                            f"岗位评分已取得标准三行，提前结束模型读取: {label}",
+                            f"岗位评分已取得标准三项评分，提前结束模型读取: {label}",
                             source="model",
                             detail={"label": label, "score_block": score_block},
                         )
                         if Config.log_verbosity != "debug":
-                            print("[模型] 岗位评分已取得标准三行，提前结束模型读取", flush=True)
+                            print("[模型] 岗位评分已取得标准三项评分，提前结束模型读取", flush=True)
                         runtime_state.emit("model_finished", f"{label} 完成", source="model")
                         return score_block
-                repetition_reason = detector.feed(chunk, content)
+                repetition_reason = guard.feed(chunk, content)
                 if repetition_reason:
                     stop_event.set()
                     printer.flush()
