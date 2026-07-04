@@ -364,8 +364,6 @@ async def create_action(payload: ActionCreate):
         database.update_job_status(payload.job_url, final_action="greeted", greeted=True)
     if payload.action_type == "already_contacted" and payload.status in {"completed", "approved"}:
         database.update_job_status(payload.job_url, final_action="already_contacted", greeted=True)
-    if payload.action_type == "send_resume" and payload.status in {"completed", "approved"}:
-        database.update_job_status(payload.job_url, final_action="resume_sent", resume_sent=True)
     runtime_state.log(f"动作已创建: {payload.action_type}", source="action")
     return action
 

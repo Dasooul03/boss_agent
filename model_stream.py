@@ -92,6 +92,8 @@ def configured_model_options(options: dict[str, Any] | None = None) -> dict[str,
 
 
 def retry_model_options(options: dict[str, Any], repetition_retry_count: int) -> dict[str, Any]:
+    # frequency_penalty / presence_penalty only affect OpenAI-compatible requests;
+    # the Ollama payload filter drops them before sending.
     if repetition_retry_count <= 0:
         return dict(options)
     updated = dict(options)
@@ -386,7 +388,7 @@ def iter_ollama_chat_chunks(
         except RuntimeError as fallback_exc:
             runtime_state.emit(
                 "model_thinking_control_failed",
-                "Ollama 绉婚櫎 think 鍙傛暟鍚庨噸璇曚粛澶辫触",
+                "Ollama 移除 think 参数后重试仍失败",
                 source="model",
                 level="error",
                 detail={
@@ -524,7 +526,7 @@ class ModelProgressGuard:
     def _normalize(value: str) -> str:
         return re.sub(r"\s+", "", value or "")
 
-    def feed(self, chunk: str, content: str) -> str:
+    def feed(self, chunk: str) -> str:
         normalized_chunk = self._normalize(chunk)
         if len(normalized_chunk) >= 8 and normalized_chunk == self._last_chunk:
             self._same_chunk_count += 1
@@ -756,7 +758,7 @@ def stream_ollama_chat(
                             print("[模型] 岗位评分已取得标准三项评分，提前结束模型读取", flush=True)
                         runtime_state.emit("model_finished", f"{label} 完成", source="model")
                         return score_block
-                repetition_reason = guard.feed(chunk, content)
+                repetition_reason = guard.feed(chunk)
                 if repetition_reason:
                     stop_event.set()
                     printer.flush()
@@ -831,7 +833,7 @@ def stream_ollama_chat(
 
 
 def model_warmup_check() -> dict[str, Any]:
-    """启动时快速检测模型连通性与延迟（流式，测首 token 延迟）。"""
+    """启动时快速检测模型连通性与延迟。"""
     from tools import now_iso
 
     result: dict[str, Any] = {
@@ -842,9 +844,48 @@ def model_warmup_check() -> dict[str, Any]:
         "latency_seconds": None,
         "error": "",
     }
+    if Config.model_provider == "openai":
+        if not Config.openai_api_key.strip():
+            result["status"] = "error"
+            result["error"] = "OpenAI API Key 未配置"
+            return result
+        payload: dict[str, Any] = {
+            "model": Config.think_model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+        payload.update(openai_payload_options({"num_predict": 8, "temperature": 0.0}))
+        apply_openai_thinking_control(payload, True)
+        started = time.monotonic()
+        try:
+            request = Request(
+                openai_chat_url(),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {Config.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urlopen(request, timeout=30) as response:
+                raw = response.read().decode("utf-8", errors="ignore")
+            data = json.loads(raw or "{}")
+            if not data.get("choices"):
+                raise RuntimeError(f"响应中没有 choices: {raw[:200]}")
+            result["status"] = "ready"
+            result["latency_seconds"] = round(time.monotonic() - started, 3)
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")
+            result["status"] = "error"
+            result["error"] = f"HTTP {exc.code}: {body[:200]}"
+        except (json.JSONDecodeError, RuntimeError, URLError, TimeoutError, OSError) as exc:
+            result["status"] = "error"
+            result["error"] = str(exc)
+        return result
+
     if Config.model_provider != "ollama":
-        result["status"] = "skipped"
-        result["error"] = "仅支持 Ollama 预热检测"
+        result["status"] = "error"
+        result["error"] = f"未知模型来源: {Config.model_provider}"
         return result
 
     payload = {

@@ -40,13 +40,12 @@ PREFIX = {
     "backend": "[系统]",
 }
 
-CLI_CONFIRM_ACTIONS = {
-    "send_resume",
-}
+CLI_CONFIRM_ACTIONS: set[str] = set()
 
 WEB_SCRIPT_PATH = Path(__file__).resolve().parent / "web_script.js"
 BOSS_SEARCH_URL = "https://www.zhipin.com/web/geek/job"
 SESSION_PREPARED = False
+BROWSER_OPEN_COOLDOWN_SECONDS = 60
 
 DETAIL_EVENT_TYPES = {
     "message_send_failed",
@@ -68,8 +67,6 @@ COMPACT_SCRIPT_STATUS_KEYWORDS = (
     "搜索关键词",
     "职位列表已处理完毕",
     "详情页已启动",
-    "附件请求监听",
-    "检查当前聊天页官方简历请求卡片",
 )
 
 
@@ -585,7 +582,7 @@ def print_status_panel() -> None:
 ╠══════════════════════════════════════════════════════════════╣
 ║  模型        {model_label:<48}║
 ║  模型状态    {model_status:<48}║
-║  思考模式    评分: {scoring_think:<6} │ 打招呼: 强制开启{' ' * 24}║
+║  思考模式    评分: {scoring_think:<6} │ 画像/标签: {scoring_think:<6} │ 打招呼: 强制开启{' ' * 8}║
 ║  评分阈值    {Config.score_threshold}分 / 本次上限 {Config.session_greet_limit}{' ' * 30}║
 ║  评分令牌    关思考 {Config.job_score_num_predict_think_off} / 开思考 {Config.job_score_num_predict_think_on}{' ' * 18}║
 ║  温度/top_p  {Config.model_temperature} / {Config.model_top_p}{' ' * 38}║
@@ -595,7 +592,7 @@ def print_status_panel() -> None:
 ║  打招呼语    {_icon(greeting_ok)} {'已确认' if greeting_ok else '未确认'}{' ' * 42}║
 ╠══════════════════════════════════════════════════════════════╣
 ║  脚本连接    {_icon(script_ok)} {'已连接' if script_ok else '等待中...'}{' ' * 42}║
-║  控制状态    {'▶ running' if control == 'resume' else '⏸ ' + control}{' ' * 40}║
+║  控制状态    {'▶ running' if control == 'running' else '⏸ ' + control}{' ' * 40}║
 ╚══════════════════════════════════════════════════════════════╝"""
 
     # 精简版（compact 日志模式下使用单行格式）
@@ -603,7 +600,7 @@ def print_status_panel() -> None:
         panel = f"""
 ┌──────────────────────────────────────────────────────────────┐
 │  Job Seeker  v2026.07                                        │
-│  {model_label} │ 评分思考: {scoring_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
+│  {model_label} │ 评分思考: {scoring_think} │ 画像/标签: {scoring_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
 │  模型: {model_status[:50]} │ 评分令牌: {Config.job_score_num_predict_think_off}/{Config.job_score_num_predict_think_on} │
 │  简历: {_icon(resume_ok)} 画像: {_icon(profile_ok)} 话术: {_icon(greeting_ok)} │ 脚本: {_icon(script_ok)} │ {control} │
 └──────────────────────────────────────────────────────────────┘"""
@@ -649,6 +646,24 @@ def api_health_url() -> str:
     return f"http://{Config.server_host}:{Config.server_port}/health"
 
 
+def browser_open_stamp_path(name: str) -> Path:
+    # Keep this in data/cache to match the PowerShell launchers.
+    return Path(Config.tags_name).parent / f"browser_open_{name}.stamp"
+
+
+def should_open_browser_page(name: str, cooldown_seconds: int = BROWSER_OPEN_COOLDOWN_SECONDS) -> bool:
+    path = browser_open_stamp_path(name)
+    now = time.time()
+    try:
+        if path.exists() and now - path.stat().st_mtime < cooldown_seconds:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(now), encoding="utf-8")
+    except OSError:
+        return True
+    return True
+
+
 def wait_for_api_ready(timeout_seconds: float = 20.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -681,13 +696,16 @@ def maybe_open_startup_pages() -> None:
         print("[启动] 本地 API 未在限定时间内就绪，已跳过自动打开。")
         return
     # 每次启动都打开 BOSS 搜索页
-    try:
-        webbrowser.open(BOSS_SEARCH_URL, new=2)
-        print("[启动] 已打开 BOSS 搜索页。")
-    except Exception as exc:
-        print(f"[启动] 打开 BOSS 搜索页失败: {exc}")
+    if should_open_browser_page("boss_search"):
+        try:
+            webbrowser.open(BOSS_SEARCH_URL, new=2)
+            print("[启动] 已打开 BOSS 搜索页。")
+        except Exception as exc:
+            print(f"[启动] 打开 BOSS 搜索页失败: {exc}")
+    else:
+        print("[启动] 60 秒内已打开过 BOSS 搜索页，本次跳过自动打开。")
     # 脚本安装页仅首次运行
-    if CONFIG_WAS_MISSING:
+    if CONFIG_WAS_MISSING and should_open_browser_page("userscript"):
         try:
             webbrowser.open(script_install_url(), new=2)
             print("[启动] 首次运行，已打开脚本安装页（后续输入 script 命令可重新打开）。")
@@ -976,6 +994,7 @@ def show_help() -> None:
   tags          重新生成/编辑岗位搜索标签
   greeting      重新生成/编辑打招呼用语
   start         开始或继续运行
+  resume-run    start 的兼容别名
   pause         暂停运行
   stop          停止自动化
   actions       处理待确认动作

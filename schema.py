@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 class ActionType(str, Enum):
     greet_suggestion = "greet_suggestion"
-    send_resume = "send_resume"
     already_contacted = "already_contacted"
 
 
@@ -49,7 +48,7 @@ class ScriptHeartbeat(BaseModel):
     page: str = "unknown"
     status: str = "idle"
     current_action: str = ""
-    detail: dict[str, Any] = {}
+    detail: dict[str, Any] = Field(default_factory=dict)
 
 
 class JobAnalyzeRequest(BaseModel):
@@ -69,7 +68,7 @@ class ActionCreate(BaseModel):
     job_url: str = ""
     company: str = ""
     title: str = ""
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionDecision(BaseModel):
@@ -85,4 +84,4 @@ class EventCreate(BaseModel):
     source: str = "script"
     level: str = "info"
     message: str
-    detail: dict[str, Any] = {}
+    detail: dict[str, Any] = Field(default_factory=dict)

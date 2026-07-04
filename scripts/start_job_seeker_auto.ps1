@@ -12,6 +12,7 @@ try {
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $BossUrl = "https://www.zhipin.com/web/geek/job"
+$OpenCooldownSeconds = 60
 
 function Write-Info {
     param([string]$Message)
@@ -89,16 +90,45 @@ function Test-OllamaAvailable {
     }
 }
 
+function Test-OpenCooldown {
+    param([string]$Name)
+    $cacheDir = Join-Path $ProjectRoot "data\cache"
+    $stampPath = Join-Path $cacheDir "browser_open_$Name.stamp"
+    try {
+        if (-not (Test-Path -LiteralPath $cacheDir)) {
+            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        }
+        if (Test-Path -LiteralPath $stampPath) {
+            $age = (Get-Date) - (Get-Item -LiteralPath $stampPath).LastWriteTime
+            if ($age.TotalSeconds -lt $OpenCooldownSeconds) {
+                return $false
+            }
+        }
+        Set-Content -LiteralPath $stampPath -Value ([DateTimeOffset]::Now.ToUnixTimeSeconds()) -Encoding UTF8
+    } catch {
+        return $true
+    }
+    return $true
+}
+
 function Open-StartupPages {
     param([int]$Port)
     if ($NoOpen) {
         return
     }
     $scriptUrl = "http://127.0.0.1:${Port}/web_script.user.js"
-    Write-Info "Opening userscript install/update page: $scriptUrl"
-    Start-Process $scriptUrl | Out-Null
-    Write-Info "Opening BOSS search page: $BossUrl"
-    Start-Process $BossUrl | Out-Null
+    if (Test-OpenCooldown "userscript") {
+        Write-Info "Opening userscript install/update page: $scriptUrl"
+        Start-Process $scriptUrl | Out-Null
+    } else {
+        Write-Warn "Userscript page was opened recently; skipping duplicate open."
+    }
+    if (Test-OpenCooldown "boss_search") {
+        Write-Info "Opening BOSS search page: $BossUrl"
+        Start-Process $BossUrl | Out-Null
+    } else {
+        Write-Warn "BOSS search page was opened recently; skipping duplicate open."
+    }
 }
 
 Set-Location $ProjectRoot

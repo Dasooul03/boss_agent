@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job Seeker
 // @namespace    http://tampermonkey.net/
-// @version      2026.06.26.4
+// @version      2026.06.26.7
 // @description  Job Seeker 篡改猴插件
 // @author       Chatbot-Zhou
 // @match        https://www.zhipin.com/*
@@ -19,23 +19,25 @@
 (function () {
     'use strict';
 
-    // OriginalAuthor: 嘎嘣脆的贝爷
+    // OriginalAuthor: 鍢庡槪鑴嗙殑璐濈埛
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.06-cli-autogreet.20',
+        scriptVersion: '2026.06-cli-autogreet.23',
+        greetMaxAttempts: 3,
+        greetRetryDelays: [0, 3000, 8000],
         resumeIndex: 0, // 第几份简历，从 0 开始递增
         serverHost: 'http://127.0.0.1:33333', // 本地服务的主机地址
-        thread: 60, // 分数阈值，低于这个就不发消息了
-        timestampTimeout: 120000, // 页面跳转来源标记有效期，单位毫秒。
-        jobInfoResponseTimeout: 90000, // 详情页回传职位信息的最长等待时间。
-        onlyGreet: true, // 仅辅助打招呼，不自动扫描聊天页。
-        sessionGreetLimit: 50, // 本次打招呼上限，后端配置会覆盖这里。
-        actionDelayMs: 2500, // 页面动作之间的保守等待时间。
-        manualInterventionMaxRetries: 3, // 人工校验自动恢复次数，连续失败后暂停。
-        searchLeaseMs: 12000, // 搜索页运行租约，防止多个搜索页同时自动化。
-        openCooldownMs: 45000, // 同一 URL 短时间内不重复打开。
-        recentProcessedHours: 24, // 后端近期已处理职位去重窗口。
+        thread: 60, // 分数阈值，低于这个就不发消息
+        timestampTimeout: 120000, // 页面跳转来源标记有效期，单位毫秒
+        jobInfoResponseTimeout: 90000, // 详情页回传职位信息的最长等待时间
+        onlyGreet: true, // 仅辅助打招呼，不自动扫描普通聊天页
+        sessionGreetLimit: 50,
+        actionDelayMs: 2500,
+        manualInterventionMaxRetries: 3,
+        searchLeaseMs: 12000,
+        openCooldownMs: 45000,
+        recentProcessedHours: 24,
     };
 
     let backendOfflineNotified = false;
@@ -53,15 +55,15 @@
         }
     }
 
-    // 元素选择器
+    // 鍏冪礌閫夋嫨鍣?
     const SELECTORS = {
         ZHIPIN: {
             SEARCH: {
                 SEARCHINPUT: 'input', // 搜索框
-                SEARCHBTN: '.search-btn', // 搜索按钮
-                JOBLISTCTN: '.job-list-container', // 职位列表容器
-                JOBLIST: '.rec-job-list', // 职位列表
-                JOBHREFS: '.job-card-box .job-name', // 职位链接
+                SEARCHBTN: '.search-btn', // 鎼滅储鎸夐挳
+                JOBLISTCTN: '.job-list-container', // 鑱屼綅鍒楄〃瀹瑰櫒
+                JOBLIST: '.rec-job-list', // 鑱屼綅鍒楄〃
+                JOBHREFS: '.job-card-box .job-name', // 鑱屼綅閾炬帴
                 JOBLIST_CANDIDATES: ['.rec-job-list', '.job-list-box', '.job-list-container', '.search-job-result'],
                 JOBHREFS_CANDIDATES: ['.job-card-box .job-name', '.job-card-wrapper .job-title a', 'a[href*="/job_detail/"]'],
             },
@@ -78,9 +80,9 @@
                 ], // 开始聊天按钮
                 NAMEBOX: '.name', // 职位名称盒子
                 JOBNAME: 'h1', // 职位名称
-                SALARY: '.salary', // 职位薪资
+                SALARY: '.salary', // 鑱屼綅钖祫
                 DETAIL: '.job-sec-text', // 职位详情
-                CHATURL: 'redirect-url', // 聊天链接
+                CHATURL: 'redirect-url', // 鑱婂ぉ閾炬帴
                 JOBNAME_CANDIDATES: ['.job-banner .name h1', '.job-primary .name h1', '.info-primary .name h1', '.name h1', 'h1'],
                 SALARY_CANDIDATES: ['.job-banner .salary', '.job-primary .salary', '.info-primary .salary', '.name .salary', '.salary'],
                 DETAIL_CANDIDATES: ['.job-sec-text', '.job-detail-section .text', '.job-description', '[class*="job-sec-text"]'],
@@ -88,7 +90,7 @@
                 CITY_CANDIDATES: ['.job-location', '.location-address', '.job-address', '.job-area', '.city'],
             },
             CHAT: {
-                // 聊天
+                // 鑱婂ぉ
                 CHATINPUT: [
                     '#chat-input',
                     '.chat-input [contenteditable="true"]',
@@ -96,30 +98,30 @@
                     'textarea[id*="chat"]',
                     'textarea[class*="chat"]',
                     '[contenteditable="true"]',
-                ], // 聊天输入框
+                ], // 鑱婂ぉ杈撳叆妗?
                 MSGSEND: [
                     '.btn-send',
                     '[class*="btn-send"]',
                     '[ka*="send"]',
                     'button[class*="send"]:not(.disabled)',
                 ], // 消息发送按钮
-                // 聊天记录
-                HISTORYCTN: '.chat-message', // 聊天记录容器
+                // 鑱婂ぉ璁板綍
+                HISTORYCTN: '.chat-message', // 鑱婂ぉ璁板綍瀹瑰櫒
                 USEFULMSG: '.item-friend,.item-myself', // 有效的文字聊天记录项
-                MSGCONTENT: '.message-content .text', // 聊天记录内容
-                // 职位
-                JOBEL: '*[ka=geek_chat_job_detail]', // 职位元素
-                JOBCITY: '.city', // 职位城市
+                MSGCONTENT: '.message-content .text', // 鑱婂ぉ璁板綍鍐呭
+                // 鑱屼綅
+                JOBEL: '*[ka=geek_chat_job_detail]', // 鑱屼綅鍏冪礌
+                JOBCITY: '.city', // 鑱屼綅鍩庡競
             }
         },
     };
 
-    // 搜索路径
+    // 鎼滅储璺緞
     const SEARCHPATH = {
         zhipin: '/web/geek/job',
     };
 
-    // 白名单
+    // 鐧藉悕鍗?
     const WHITELIST = {
         zhipin: {
             detail: ['/job_detail', '/web/geek/job_detail'],
@@ -127,7 +129,7 @@
         },
     };
 
-    // 工具
+    // 宸ュ叿
     const tools = {
         inWhiteList: function (pathObj) {
             return Object.values(pathObj).some((path) => {
@@ -192,7 +194,7 @@
                     reject(new Error(`未找到目标元素: ${Array.isArray(selector) ? selector.join(', ') : selector}`));
                 }, timeout);
 
-                // 定义MutationObserver回调
+                // 定义 MutationObserver 回调
                 const observer = new MutationObserver((_, obs) => {
                     try {
                         const el = this.findOne(selector);
@@ -208,7 +210,7 @@
                     }
                 });
 
-                // 开始观察整个文档的DOM变化
+                // 开始观察整个文档的 DOM 变化
                 observer.observe(document.documentElement, {
                     childList: true,
                     subtree: true
@@ -358,7 +360,6 @@
         openTabNSetTimestamp(href, key, self = false, options = {}) {
             localStorage.setItem(key, new Date().getTime());
 
-            // 当前页跳转：用于回到搜索页等场景，保持原页面内跳转。
             if (self) {
                 location.href = href;
                 return true;
@@ -368,7 +369,6 @@
             }
             this.markOpenUrl(href, key);
 
-            // 优先使用 Tampermonkey 后台打开，避免新标签页抢占当前页面焦点。
             if (typeof GM_openInTab === 'function') {
                 return GM_openInTab(href, {
                     active: false,
@@ -377,7 +377,6 @@
                 });
             }
 
-            // 兜底：如果 GM_openInTab 不可用，退回原生 window.open。
             return window.open(href, key);
         },
         absoluteUrl(href) {
@@ -436,6 +435,86 @@
             const child = node.querySelector ? node.querySelector('a[href]') : null;
             const link = direct || closest || child;
             return link ? this.normalUrl(link.getAttribute('href') || link.href) : '';
+        },
+        greetContextKey: '__chatbot_zhou_greet_context',
+        greetClaimKey: '__chatbot_zhou_greet_claim',
+        newGreetRequestId() {
+            return `greet_${Date.now()}_${Math.floor(Math.random() * 100000)}_${PAGE_INSTANCE_ID}`;
+        },
+        getGreetContext() {
+            return this.readJson(this.greetContextKey, {});
+        },
+        saveGreetContext(context) {
+            const next = {
+                ...context,
+                requestId: String(context.requestId || this.newGreetRequestId()),
+                createdAt: Number(context.createdAt || Date.now()),
+                maxAttempts: Number(context.maxAttempts || OPTIONS.greetMaxAttempts || 3),
+                attempt: Number(context.attempt || 1),
+            };
+            this.writeJson(this.greetContextKey, next);
+            return next;
+        },
+        clearGreetContext(requestId = '') {
+            const context = this.getGreetContext();
+            if (requestId && context.requestId && context.requestId !== requestId) return false;
+            localStorage.removeItem(this.greetContextKey);
+            const claim = this.readJson(this.greetClaimKey, {});
+            if (!requestId || claim.requestId === requestId) {
+                localStorage.removeItem(this.greetClaimKey);
+            }
+            return true;
+        },
+        claimGreetContext() {
+            const context = this.getGreetContext();
+            if (!context || !context.requestId) {
+                return { claimed: false, reason: 'missing_request_id', context };
+            }
+            const createdAt = Number(context.createdAt || 0);
+            if (!createdAt || Date.now() - createdAt > OPTIONS.timestampTimeout) {
+                return { claimed: false, reason: 'expired', context };
+            }
+            const claim = this.readJson(this.greetClaimKey, {});
+            const claimExpired = !claim.claimedAt || Date.now() - Number(claim.claimedAt) > OPTIONS.timestampTimeout;
+            if (claim.requestId === context.requestId && claim.pageInstanceId && claim.pageInstanceId !== PAGE_INSTANCE_ID && !claimExpired) {
+                return { claimed: false, reason: 'claimed_by_other_page', context, claim };
+            }
+            const nextClaim = {
+                requestId: context.requestId,
+                pageInstanceId: PAGE_INSTANCE_ID,
+                claimedAt: Date.now(),
+                url: location.href,
+            };
+            this.writeJson(this.greetClaimKey, nextClaim);
+            const confirmed = this.readJson(this.greetClaimKey, {});
+            const claimed = confirmed.requestId === context.requestId && confirmed.pageInstanceId === PAGE_INSTANCE_ID;
+            return { claimed, reason: claimed ? '' : 'claim_race_lost', context, claim: confirmed };
+        },
+        releaseGreetClaim(requestId = '') {
+            const claim = this.readJson(this.greetClaimKey, {});
+            if (claim.pageInstanceId !== PAGE_INSTANCE_ID) return false;
+            if (requestId && claim.requestId !== requestId) return false;
+            localStorage.removeItem(this.greetClaimKey);
+            return true;
+        },
+        claimTimestampGreetFallback(openedAt) {
+            const fallbackId = `timestamp_${openedAt || 0}`;
+            const claim = this.readJson(this.greetClaimKey, {});
+            const claimExpired = !claim.claimedAt || Date.now() - Number(claim.claimedAt) > OPTIONS.timestampTimeout;
+            if (claim.requestId === fallbackId && claim.pageInstanceId && claim.pageInstanceId !== PAGE_INSTANCE_ID && !claimExpired) {
+                return { claimed: false, reason: 'fallback_claimed_by_other_page', claim };
+            }
+            const nextClaim = {
+                requestId: fallbackId,
+                pageInstanceId: PAGE_INSTANCE_ID,
+                claimedAt: Date.now(),
+                url: location.href,
+                fallback: true,
+            };
+            this.writeJson(this.greetClaimKey, nextClaim);
+            const confirmed = this.readJson(this.greetClaimKey, {});
+            const claimed = confirmed.requestId === fallbackId && confirmed.pageInstanceId === PAGE_INSTANCE_ID;
+            return { claimed, reason: claimed ? 'timestamp_fallback_claimed' : 'fallback_claim_race_lost', claim: confirmed };
         },
         sessionStateKey: '__chatbot_zhou_greet_session',
         getGreetSession() {
@@ -506,6 +585,9 @@
                 '图形验证码',
                 '请输入验证码',
                 '完成验证码',
+                'captcha',
+                'verify',
+                'login',
             ];
             return patterns.find(pattern => content.includes(pattern)) || '';
         },
@@ -524,6 +606,8 @@
                 '沟通名额已用完',
                 '打招呼次数已用完',
                 '操作过于频繁',
+                'limit',
+                'too frequent',
             ];
             return patterns.find(pattern => content.includes(pattern)) || '';
         },
@@ -539,28 +623,23 @@
             const content = String(value || '');
             const detected = this.detectInterruptionText(content);
             if (detected) return detected;
-            const explicit = content.match(/需要人工处理[:：]\s*([^;；\n\r]+)/);
-            if (explicit && explicit[1]) return explicit[1].trim();
-            const detail = content.match(/详情页需要人工处理[:：]\s*([^;；\n\r]+)/);
-            if (detail && detail[1]) return detail[1].trim();
-            return '';
+            return content.slice(0, 120);
         },
         isManualInterruptionError(value) {
-            return Boolean(this.manualInterruptionReason(value));
+            return Boolean(this.manualInterruptionReason(value) && this.detectInterruptionText(String(value || '')));
         },
         platformLimitReason(value) {
             const content = String(value || '');
             const detected = this.detectPlatformLimitText(content);
             if (detected) return detected;
-            const explicit = content.match(/平台次数限制[:：]\s*([^;；\n\r]+)/);
-            if (explicit && explicit[1]) return explicit[1].trim();
             return '';
         },
         isPlatformLimitError(value) {
             return Boolean(this.platformLimitReason(value));
         },
         isElementMissingError(value) {
-            return String(value || '').includes('未找到目标元素');
+            const content = String(value || '');
+            return content.includes('未找到目标元素') || content.includes('target element') || content.includes('not found');
         },
         contactedReasonFromElement(el) {
             if (!el) return '';
@@ -583,8 +662,8 @@
     };
 
     /**
-     * 横幅
-     * @param {string} text 显示的文本
+     * 妯箙
+     * @param {string} text 鏄剧ず鐨勬枃鏈?
      */
     function banner(text) {
         const el = document.createElement('div');
@@ -608,9 +687,9 @@
     }
 
     /**
-     * 转换时间
-     * @param {number} seconds 秒数
-     * @returns {string} 转换后的时间字符串
+     * 杞崲鏃堕棿
+     * @param {number} seconds 绉掓暟
+     * @returns {string} 杞崲鍚庣殑鏃堕棿瀛楃涓?
      */
     function convertTime(seconds) {
         const hours = Math.floor(seconds / 3600);
@@ -630,14 +709,14 @@
     }
 
     class WebBroadcast {
-        static ID_COUNTER = 0; // 自增序列，避免时间戳冲突
+        static ID_COUNTER = 0; // 鑷搴忓垪锛岄伩鍏嶆椂闂存埑鍐茬獊
 
         /**
-         * @param {string} name 频道名称
-         * @param {string} target 当前页面标识
-         * @param {object} [options] 配置项
-         * @param {number} [options.retry=3] 发送失败重试次数
-         * @param {number} [options.retryInterval=1000] 重试间隔(毫秒)
+         * @param {string} name 棰戦亾鍚嶇О
+         * @param {string} target 褰撳墠椤甸潰鏍囪瘑
+         * @param {object} [options] 閰嶇疆椤?
+         * @param {number} [options.retry=3] 鍙戦€佸け璐ラ噸璇曟鏁?
+         * @param {number} [options.retryInterval=1000] 閲嶈瘯闂撮殧(姣)
          */
         constructor(name, target, options = {}) {
             this.name = name;
@@ -648,13 +727,13 @@
             this.pendingResponses = {};
             this.pendingReceives = {};
 
-            // 初始化通信通道
+            // 鍒濆鍖栭€氫俊閫氶亾
             this.initChannel();
         }
 
-        /* -------------------- 核心通信逻辑 -------------------- */
+        /* -------------------- 鏍稿績閫氫俊閫昏緫 -------------------- */
         initChannel() {
-            // 优先使用 BroadcastChannel
+            // 浼樺厛浣跨敤 BroadcastChannel
             if (typeof BroadcastChannel !== 'undefined') {
                 this.setupBroadcastChannel();
             } else {
@@ -676,7 +755,7 @@
             this.channelType = 'storage';
             this.storageKey = `web_broadcast_${this.name}`;
 
-            // 监听 storage 事件
+            // 鐩戝惉 storage 浜嬩欢
             window.addEventListener('storage', (e) => {
                 if (e.key === this.storageKey && e.newValue) {
                     const message = JSON.parse(e.newValue);
@@ -689,12 +768,12 @@
             const resp = e.data;
             if (![this.target, 'all'].includes(resp.to)) return;
 
-            // 处理事件监听
+            // 澶勭悊浜嬩欢鐩戝惉
             if (this.evts[resp.type]) {
                 Promise.resolve().then(() => this.evts[resp.type](resp.from, resp.data));
             }
 
-            // 处理 receive 等待
+            // 澶勭悊 receive 绛夊緟
             const receiveKey = `${resp.from}-${resp.type}`;
             if (this.pendingReceives[receiveKey]) {
                 const pending = this.pendingReceives[receiveKey];
@@ -703,7 +782,7 @@
                 delete this.pendingReceives[receiveKey];
             }
 
-            // 处理 sendAndReceive 响应
+            // 澶勭悊 sendAndReceive 鍝嶅簲
             if (this.pendingResponses[resp.data?.requestId]) {
                 const pending = this.pendingResponses[resp.data.requestId];
                 pending.resolve(resp.data);
@@ -712,7 +791,7 @@
             }
         }
 
-        /* -------------------- 消息收发方法 -------------------- */
+        /* -------------------- 娑堟伅鏀跺彂鏂规硶 -------------------- */
         send(to, type, data = null, attempt = 0) {
             const message = { from: this.target, to, type, data };
 
@@ -721,7 +800,7 @@
                     if (this.channelType === 'broadcast') {
                         this.channel.postMessage(message);
                     } else {
-                        // storage 方案需要先写入再删除，触发事件
+                        // storage 鏂规闇€瑕佸厛鍐欏叆鍐嶅垹闄わ紝瑙﹀彂浜嬩欢
                         localStorage.setItem(this.storageKey, JSON.stringify(message));
                         localStorage.removeItem(this.storageKey);
                     }
@@ -741,7 +820,7 @@
             const key = `${from}-${type}`;
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
-                    reject(new WebBroadcastError('TIMEOUT', `接收超时: ${type}`));
+                    reject(new WebBroadcastError('TIMEOUT', `鎺ユ敹瓒呮椂: ${type}`));
                     delete this.pendingReceives[key];
                 }, timeout);
 
@@ -761,7 +840,7 @@
 
 
                 this.pendingResponses[requestId] = { resolve, reject, timer };
-                // 发送时携带 responseType
+                // 鍙戦€佹椂鎼哄甫 responseType
                 this.send(to, type, { ...data, requestId, responseType });
             });
         }
@@ -771,7 +850,7 @@
             return this.send(originalFrom, finalResponseType, { ...data, requestId });
         }
 
-        /* -------------------- 工具方法 -------------------- */
+        /* -------------------- 宸ュ叿鏂规硶 -------------------- */
         generateRequestId() {
             const time = Date.now().toString(36);
             const random = Math.random().toString(36).slice(2, 6);
@@ -788,7 +867,7 @@
         }
 
         on(evt, fn) {
-            if (typeof fn !== 'function') throw new Error('回调必须是函数');
+            if (typeof fn !== 'function') throw new Error('callback must be a function');
             this.evts[evt] = fn;
         }
 
@@ -806,16 +885,16 @@
         }
     }
 
-    // api请求
+    // api璇锋眰
     class Api {
         constructor() { }
 
         /**
-         * 封装请求
-         * @param {string} path 请求路径
-         * @param {string} method 请求方法
-         * @param {any} data 请求数据
-         * @returns {Promise<any>} 请求结果
+         * 灏佽璇锋眰
+         * @param {string} path 璇锋眰璺緞
+         * @param {string} method 璇锋眰鏂规硶
+         * @param {any} data 璇锋眰鏁版嵁
+         * @returns {Promise<any>} 璇锋眰缁撴灉
          */
         __http(path, method = 'GET', data = null) {
             return new Promise(async (resolve, reject) => {
@@ -823,8 +902,8 @@
                 const hasPromiseRequest = typeof GM !== 'undefined' && GM.xmlHttpRequest;
                 const request = hasLegacyRequest ? GM_xmlhttpRequest : (hasPromiseRequest ? GM.xmlHttpRequest : null);
                 if (!request) {
-                    banner('缺少 GM.xmlHttpRequest 权限');
-                    reject('缺少 GM.xmlHttpRequest 权限');
+                    banner('缂哄皯 GM.xmlHttpRequest 鏉冮檺');
+                    reject('缂哄皯 GM.xmlHttpRequest 鏉冮檺');
                     return;
                 }
                 const handleResponse = (resp) => {
@@ -837,8 +916,8 @@
                         const raw = resp.responseText ?? resp.response ?? '{}';
                         resolve(typeof raw === 'string' ? JSON.parse(raw) : raw);
                     } catch (e) {
-                        banner('响应解析失败');
-                        reject(`响应解析失败: ${e}`);
+                        banner('鍝嶅簲瑙ｆ瀽澶辫触');
+                        reject(`鍝嶅簲瑙ｆ瀽澶辫触: ${e}`);
                     }
                 };
                 const handleError = (err) => {
@@ -870,7 +949,7 @@
         }
 
         /**
-         * 获取自我介绍
+         * 鑾峰彇鑷垜浠嬬粛
          */
         getIntroduce() {
             return new Promise((resolve, reject) => this.__http('/get-introduce').then(res => {
@@ -879,7 +958,7 @@
         }
 
         /**
-         * 获取标签
+         * 鑾峰彇鏍囩
          */
         getTags() {
             return new Promise((resolve, reject) => this.__http('/tags').then(res => {
@@ -894,7 +973,7 @@
         }
 
         /**
-         * 上报脚本状态
+         * 涓婃姤鑴氭湰鐘舵€?
          */
         heartbeat(page, status = 'running', currentAction = '', detail = {}) {
             return this.__http('/script/heartbeat', 'POST', JSON.stringify({
@@ -927,14 +1006,14 @@
         }
 
         /**
-         * 结构化职位分析
+         * 缁撴瀯鍖栬亴浣嶅垎鏋?
          */
         analyzeJob(jobInfo) {
             return this.__http('/jobs/analyze', 'POST', JSON.stringify(jobInfo)).then(res => res.analysis);
         }
 
         /**
-         * 创建待确认动作
+         * 鍒涘缓寰呯‘璁ゅ姩浣?
          */
         createAction(actionType, payload = {}, jobInfo = {}, status = 'pending') {
             return this.__http('/actions', 'POST', JSON.stringify({
@@ -966,12 +1045,12 @@
     // 日志记录
     class Logger {
         constructor(startFn, pauseFn) {
-            // 校验函数
-            if (startFn && !Function.prototype.isPrototypeOf(startFn)) {
-                throw new Error('参数错误，startFn应为函数');
+            // 校验回调函数
+            if (startFn && typeof startFn !== 'function') {
+                throw new Error('参数错误：startFn 应为函数');
             }
-            if (pauseFn && !Function.prototype.isPrototypeOf(pauseFn)) {
-                throw new Error('参数错误，pauseFn应为函数');
+            if (pauseFn && typeof pauseFn !== 'function') {
+                throw new Error('参数错误：pauseFn 应为函数');
             }
             // 创建元素
             const ctn = document.createElement('div');
@@ -1089,42 +1168,42 @@
         }
     }
 
-    // boss 直聘
+    // boss 鐩磋仒
     class Zhipin {
         constructor() {
-            // 窗口标签
+            // 绐楀彛鏍囩
             this.targets = {
                 search: "__zhipin_search",
                 detail: "__zhipin_detail",
                 chat: "__zhipin_chat",
                 chatGreet: "__zhipin_chat_greet",
             };
-            // 广播类型
+            // 骞挎挱绫诲瀷
             this.bcTypes = {
-                // 全局
+                // 鍏ㄥ眬
                 STATUS: "status",
                 RUN: 'run',
                 DIVIDER: 'divider',
                 INTRODUCE: 'introduce',
                 HEART_BEAT: 'heart-beat',
-                // 聊天页和职位详情页
+                // 鑱婂ぉ椤靛拰鑱屼綅璇︽儏椤?
                 GET_JOB_INFO: 'get-job-info',
                 SAY_HI: 'say-hi',
             };
-            // 白名单
+            // 鐧藉悕鍗?
             this.whiteList = WHITELIST.zhipin;
-            // 记录状态
+            // 璁板綍鐘舵€?
             this.pause = false;
             this.tags = [];
             this.introduce = ''
         }
 
-        // 注册广播
+        // 娉ㄥ唽骞挎挱
         __broadcast(target) {
             this.broadcast = new WebBroadcast('__zhipin_broadcast', target);
         }
 
-        // 搜索页
+        // 鎼滅储椤?
         async __search(tagIdx) {
             // api
             const api = new Api();
@@ -1141,18 +1220,19 @@
             let totalProcessedMs = 0;
             let currentJobProgress = null;
             let page = 0;
-            // 记录职位链接
+            // 璁板綍鑱屼綅閾炬帴
             let jobHrefs = [];
             let elsLen = 0;
             const seenJobHrefs = new Set();
             const backendProcessedHrefs = new Set();
             let lastJobListEventKey = '';
-            // 缓存
+            // 缂撳瓨
             let started = false;
             let booting = false;
             let loopRunning = false;
             let waitingForGreeting = false;
             let greetTimeoutId = null;
+            let activeGreetingJob = null;
             let currentSearchAction = '等待启动';
             let lastBackendControl = 'paused';
             let lastBackendRunId = '';
@@ -1313,7 +1393,7 @@
 
             window.addEventListener('beforeunload', releaseSearchLease);
 
-            // 日志启动暂停事件
+            // 日志启动/暂停事件
             const logger = new Logger(async () => {
                 const res = await api.heartbeat('search', this.pause ? 'paused' : 'idle', '等待 CLI start', scriptHeartbeatDetail());
                 applyBackendConfig(res.config);
@@ -1328,7 +1408,7 @@
                 }
                 logger.setPaused(true);
                 this.pause = true;
-                logger.add('请回到 CLI 输入 start，确认本轮岗位标签和本次打招呼上限后开始');
+                logger.add('请回到 CLI 输入 start，确认本轮岗位标签和打招呼上限后开始');
             }, async () => {
                 await api.control('pause');
                 this.pause = true;
@@ -1505,26 +1585,134 @@
                 }
             }, 3000);
 
-            const startGreetingWait = (jobInfo) => {
+            const startGreetingWait = (jobInfo, href, requestId, attempt = 1) => {
                 waitingForGreeting = true;
+                activeGreetingJob = {
+                    jobInfo,
+                    href,
+                    requestId,
+                    attempt: Math.max(1, Number(attempt || 1)),
+                    maxAttempts: Math.max(1, Number(OPTIONS.greetMaxAttempts || 3)),
+                };
                 if (greetTimeoutId) clearTimeout(greetTimeoutId);
                 greetTimeoutId = setTimeout(async () => {
                     if (!waitingForGreeting) return;
-                    waitingForGreeting = false;
-                    logger.add(`职位 [${jobInfo.title}] 打招呼窗口超时，下一个`);
-                    await api.event('greet_failed', `打招呼窗口超时: ${jobInfo.title}`, 'script', 'error', { title: jobInfo.title });
-                    finishJobProgress('打招呼超时');
-                    loop();
+                    await handleGreetingResult({
+                        success: false,
+                        error: 'greet_window_timeout',
+                        failureCode: 'greet_timeout',
+                        retryable: true,
+                        requestId,
+                    });
+                    return;
                 }, 60000);
             };
 
-            const finishGreetingWait = () => {
+            const finishGreetingWait = (requestId = '') => {
                 waitingForGreeting = false;
                 if (greetTimeoutId) {
                     clearTimeout(greetTimeoutId);
                     greetTimeoutId = null;
                 }
                 closeActiveTempTab();
+                tools.clearGreetContext(requestId);
+                activeGreetingJob = null;
+            };
+
+            const isNonRetryableGreetingError = (error) => {
+                const text = String(error || '');
+                return tools.isPlatformLimitError(text)
+                    || tools.isManualInterruptionError(text)
+                    || text.includes('未启用打招呼用语')
+                    || text.includes('缺少聊天页地址')
+                    || text.includes('缺少打招呼')
+                    || text.includes('浏览器拦截');
+            };
+
+            const handleGreetingResult = async (data = {}) => {
+                const active = activeGreetingJob || {};
+                const requestId = data.greetRequestId || data.requestId || active.requestId || '';
+                if (active.requestId && requestId && requestId !== active.requestId) {
+                    await api.event('greet_result_stale', `忽略过期打招呼结果: ${requestId}`, 'script', 'info', {
+                        activeRequestId: active.requestId,
+                        requestId,
+                    });
+                    return;
+                }
+
+                const jobInfo = active.jobInfo || {};
+                const href = active.href || jobInfo.url || '';
+                const attempt = Math.max(1, Number(data.attempt || active.attempt || 1));
+                const maxAttempts = Math.max(1, Number(active.maxAttempts || OPTIONS.greetMaxAttempts || 3));
+                const error = String(data.error || data.failureCode || 'greet_failed');
+
+                if (data.success) {
+                    const count = Number(data.sessionGreetCount || tools.getSessionGreetCount());
+                    logger.add(`打招呼成功，本轮计数 ${count}/${OPTIONS.sessionGreetLimit}`);
+                    finishGreetingWait(requestId);
+                    finishJobProgress('打招呼成功');
+                    if (isSessionLimitReached()) {
+                        await stopForSessionLimit(Number(data.sessionGreetCount || tools.getSessionGreetCount()));
+                        return;
+                    }
+                    loop();
+                    return;
+                }
+
+                const retryable = data.retryable !== false && !isNonRetryableGreetingError(error);
+                const canRetry = retryable && jobInfo && jobInfo.chatUrl && attempt < maxAttempts;
+                logger.add(`打招呼失败 ${attempt}/${maxAttempts}${error ? ': ' + error : ''}`);
+
+                if (tools.isPlatformLimitError(error)) {
+                    finishGreetingWait(requestId);
+                    finishJobProgress('平台限制');
+                    await handlePageFailure(tools.platformLimitReason(error), 'platform_limit', 'chat_greet');
+                    return;
+                }
+                if (tools.isManualInterruptionError(error)) {
+                    finishGreetingWait(requestId);
+                    finishJobProgress('需要人工处理');
+                    await handleManualInterruption(tools.manualInterruptionReason(error), 'chat_greet');
+                    return;
+                }
+
+                if (canRetry) {
+                    const nextAttempt = attempt + 1;
+                    const delay = Number((OPTIONS.greetRetryDelays || [0, 3000, 8000])[nextAttempt - 1] || 3000);
+                    finishGreetingWait(requestId);
+                    logger.add(`准备第 ${nextAttempt}/${maxAttempts} 次打招呼重试: ${jobInfo.title || ''}`);
+                    await api.event('greet_retry_scheduled', `准备第 ${nextAttempt}/${maxAttempts} 次打招呼重试: ${jobInfo.title || ''}`, 'script', 'warning', {
+                        title: jobInfo.title || '',
+                        error,
+                        attempt,
+                        nextAttempt,
+                        maxAttempts,
+                        requestId,
+                    });
+                    setTimeout(() => {
+                        openGreetingChat(jobInfo, href, `retry_after_${error}`, nextAttempt).catch(async (retryError) => {
+                            await handleGreetingResult({
+                                success: false,
+                                error: String(retryError),
+                                failureCode: 'greet_retry_open_failed',
+                                retryable: !isNonRetryableGreetingError(retryError),
+                                attempt: nextAttempt,
+                            });
+                        });
+                    }, delay);
+                    return;
+                }
+
+                finishGreetingWait(requestId);
+                await api.event('greet_failed_final', `打招呼最终失败: ${jobInfo.title || ''} / ${error}`, 'script', 'error', {
+                    title: jobInfo.title || '',
+                    error,
+                    attempt,
+                    maxAttempts,
+                    requestId,
+                });
+                finishJobProgress('打招呼最终失败');
+                loop();
             };
 
             const resetManualInterventionRecovery = async (label = '') => {
@@ -1690,16 +1878,16 @@
                 return false;
             };
 
-            // 开始广播
+            // 寮€濮嬪箍鎾?
             const startBroadcast = () => {
                 this.__broadcast(this.targets.search);
-                // 接收聊天页的消息提醒
+                // 鎺ユ敹鑱婂ぉ椤电殑娑堟伅鎻愰啋
                 this.broadcast.on(this.bcTypes.STATUS, (from, data) => {
                     if (from === this.targets.chat) {
                         logger.add(data);
                     }
                 });
-                // 发送自我介绍
+                // 鍙戦€佽嚜鎴戜粙缁?
                 this.broadcast.on(this.bcTypes.INTRODUCE, (from, data) => {
                     this.broadcast.reply(
                         from,
@@ -1709,15 +1897,14 @@
                         data.responseType
                     );
                 });
-                // 分割线
+                // 鍒嗗壊绾?
                 this.broadcast.on(this.bcTypes.DIVIDER, () => {
                     logger.divider();
                 });
-                // 监听打招呼
+                // 鐩戝惉鎵撴嫑鍛?
                 greetListener();
-                // 监听聊天页
-                chatListener();
-                // 心跳监听
+                // 鐩戝惉鑱婂ぉ椤?
+                // 蹇冭烦鐩戝惉
                 heartBeatListener();
             };
 
@@ -1819,7 +2006,7 @@
                 return false;
             };
 
-            document.nextPage = nextPage
+            document.nextPage = nextPage;
 
             const switchToNextKeyword = async (reason = '') => {
                 if (!this.tags.length) return false;
@@ -1853,64 +2040,6 @@
                     reason,
                 });
                 return false;
-            };
-
-            // 获取职位信息
-            const getJobInfo = async (href) => {
-                const platformLimit = tools.detectPlatformLimit();
-                if (platformLimit) {
-                    throw new Error(`平台次数限制: ${platformLimit}`);
-                }
-                const interruption = tools.detectManualInterruption();
-                if (interruption) {
-                    throw new Error(`需要人工处理: ${interruption}`);
-                }
-                // 打开窗口
-                setSearchAction(`打开职位详情: ${href}`);
-                await api.event('job_detail_opened', `打开职位详情: ${href}`, 'script', 'info', { url: href });
-                const detailResponse = this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO, OPTIONS.jobInfoResponseTimeout);
-                const opened = tools.openTabNSetTimestamp(href, this.targets.detail);
-                rememberTempTab(opened);
-                setSearchAction(`等待详情页回传职位信息: ${href}`);
-                await api.heartbeat('search', 'running', `等待详情页回传职位信息: ${href}`, {
-                    ...scriptHeartbeatDetail(),
-                    url: href,
-                    detailWindowOpened: Boolean(opened),
-                    jobInfoResponseTimeout: OPTIONS.jobInfoResponseTimeout,
-                });
-                // 接收职位信息
-                let info;
-                if (!opened) {
-                    detailResponse.catch(() => null);
-                    const popupError = new Error('浏览器拦截了职位详情页弹窗');
-                    await api.event('job_detail_popup_blocked', `${popupError.message}: ${href}`, 'script', 'error', { url: href });
-                    info = await fetchJobInfoFallback(href, popupError);
-                } else try {
-                    info = await detailResponse;
-                } catch (e) {
-                    if (tools.isManualInterruptionError(e)) throw e;
-                    if (tools.isPlatformLimitError(e)) throw e;
-                    await api.event(
-                        'job_detail_timeout',
-                        `详情页未回传职位信息: ${href}`,
-                        'script',
-                        'error',
-                        { url: href, error: String(e), hint: '请确认详情页是否出现 detail / running 心跳；新版脚本会在窗口名匹配时继续回传，不再受 15 秒加载限制' }
-                    );
-                    info = await fetchJobInfoFallback(href, e);
-                }
-                if (info && info.manual_intervention) {
-                    throw new Error(`需要人工处理: ${info.reason || info.error || '详情页人工校验'}`);
-                }
-                if (info && info.page_failure) {
-                    throw new Error(`${info.failure_kind === 'platform_limit' ? '平台次数限制' : '未找到目标元素'}: ${info.reason || info.error || '详情页页面失败'}`);
-                }
-                if (!info || !info.title || !info.detail) {
-                    throw new Error('职位详情缺少标题或描述');
-                }
-                closeActiveTempTab();
-                await api.event('job_detail_received', `已读取职位详情: ${info.title}`, 'script', 'info', info);
-                return info;
             };
 
             const extractJobInfoFromDocument = (doc, href, source = 'document') => {
@@ -1951,9 +2080,7 @@
                     const interruption = tools.detectInterruptionText(interruptionText);
                     if (interruption) throw new Error(`需要人工处理: ${interruption}`);
                     const info = extractJobInfoFromDocument(doc, href, 'fetch_fallback');
-                    if (!info.title || !info.detail) {
-                        throw new Error('详情页 fetch 兜底解析失败：缺少标题或描述');
-                    }
+                    if (!info.title || !info.detail) throw new Error('详情页 fetch 兜底解析失败：缺少标题或描述');
                     await api.event('job_detail_fetch_fallback_finished', `详情页兜底解析成功: ${info.title}`, 'script', 'info', {
                         url: href,
                         hasAddUrl: Boolean(info.addUrl),
@@ -1962,23 +2089,60 @@
                     return info;
                 } catch (fallbackError) {
                     if (tools.isPlatformLimitError(fallbackError)) {
-                        await api.event('job_detail_platform_limit', `详情页触发平台次数限制: ${fallbackError}`, 'script', 'error', {
-                            url: href,
-                            originalError: String(originalError),
-                        });
+                        await api.event('job_detail_platform_limit', `详情页触发平台次数限制: ${fallbackError}`, 'script', 'error', { url: href, originalError: String(originalError) });
                         throw fallbackError;
                     }
                     if (tools.isManualInterruptionError(fallbackError)) {
-                        await api.event('job_detail_manual_intervention', `详情页需要人工校验: ${fallbackError}`, 'script', 'error', {
-                            url: href,
-                            originalError: String(originalError),
-                        });
+                        await api.event('job_detail_manual_intervention', `详情页需要人工校验: ${fallbackError}`, 'script', 'error', { url: href, originalError: String(originalError) });
                         throw fallbackError;
                     }
                     await api.event('job_detail_fetch_fallback_failed', `详情页兜底解析失败: ${fallbackError}`, 'script', 'error', { url: href, originalError: String(originalError) });
                     throw new Error(`详情页广播失败且兜底解析失败: ${originalError}; ${fallbackError}`);
                 }
             };
+
+            // 获取职位信息
+            const getJobInfo = async (href) => {
+                const platformLimit = tools.detectPlatformLimit();
+                if (platformLimit) throw new Error(`平台次数限制: ${platformLimit}`);
+                const interruption = tools.detectManualInterruption();
+                if (interruption) throw new Error(`需要人工处理: ${interruption}`);
+                setSearchAction(`打开职位详情: ${href}`);
+                await api.event('job_detail_opened', `打开职位详情: ${href}`, 'script', 'info', { url: href });
+                const detailResponse = this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO, OPTIONS.jobInfoResponseTimeout);
+                const opened = tools.openTabNSetTimestamp(href, this.targets.detail);
+                rememberTempTab(opened);
+                setSearchAction(`等待详情页回传职位信息: ${href}`);
+                await api.heartbeat('search', 'running', `等待详情页回传职位信息: ${href}`, {
+                    ...scriptHeartbeatDetail(),
+                    url: href,
+                    detailWindowOpened: Boolean(opened),
+                    jobInfoResponseTimeout: OPTIONS.jobInfoResponseTimeout,
+                });
+                let info;
+                if (!opened) {
+                    detailResponse.catch(() => null);
+                    const popupError = new Error('浏览器拦截了职位详情页弹窗');
+                    await api.event('job_detail_popup_blocked', `${popupError.message}: ${href}`, 'script', 'error', { url: href });
+                    info = await fetchJobInfoFallback(href, popupError);
+                } else {
+                    try {
+                        info = await detailResponse;
+                    } catch (e) {
+                        if (tools.isManualInterruptionError(e)) throw e;
+                        if (tools.isPlatformLimitError(e)) throw e;
+                        await api.event('job_detail_timeout', `详情页未回传职位信息: ${href}`, 'script', 'error', { url: href, error: String(e) });
+                        info = await fetchJobInfoFallback(href, e);
+                    }
+                }
+                if (info && info.manual_intervention) throw new Error(`需要人工处理: ${info.reason || info.error || '详情页人工校验'}`);
+                if (info && info.page_failure) throw new Error(`${info.failure_kind === 'platform_limit' ? '平台次数限制' : '未找到目标元素'}: ${info.reason || info.error || '详情页页面失败'}`);
+                if (!info || !info.title || !info.detail) throw new Error('职位详情缺少标题或描述');
+                closeActiveTempTab();
+                await api.event('job_detail_received', `已读取职位详情: ${info.title}`, 'script', 'info', info);
+                return info;
+            };
+
 
             const getJobInfoWithRetry = async (href) => {
                 try {
@@ -2039,7 +2203,7 @@
                 }
             };
 
-            // 添加到聊天列表
+            // 娣诲姞鍒拌亰澶╁垪琛?
             const addToChatList = async (url) => {
                 if (!url) throw new Error('缺少打招呼请求链接');
                 try {
@@ -2063,10 +2227,12 @@
                 }
             };
 
-            const openGreetingChat = async (jobInfo, href, reason) => {
+            const openGreetingChat = async (jobInfo, href, reason, attempt = 1) => {
                 if (!jobInfo.chatUrl) throw new Error('缺少聊天页地址');
-                startGreetingWait(jobInfo);
-                localStorage.setItem('__chatbot_zhou_greet_context', JSON.stringify({
+                const requestId = tools.newGreetRequestId();
+                startGreetingWait(jobInfo, href, requestId, attempt);
+                tools.saveGreetContext({
+                    requestId,
                     url: href,
                     chatUrl: jobInfo.chatUrl || '',
                     title: jobInfo.title,
@@ -2074,16 +2240,25 @@
                     salary: jobInfo.salary || '',
                     greeting: this.introduce,
                     reason,
-                }));
-                await api.event('greet_chat_opened', `打开聊天页准备打招呼: ${jobInfo.title}`, 'script', 'info', {
+                    attempt,
+                    maxAttempts: OPTIONS.greetMaxAttempts,
+                    createdAt: Date.now(),
+                });
+                await api.event('greet_chat_opened', `打开聊天页准备打招呼 ${attempt}/${OPTIONS.greetMaxAttempts}: ${jobInfo.title}`, 'script', 'info', {
                     title: jobInfo.title,
                     chatUrl: jobInfo.chatUrl,
                     reason,
+                    requestId,
+                    attempt,
+                    maxAttempts: OPTIONS.greetMaxAttempts,
                 });
-                const opened = tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet);
+                const opened = tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet, false, {
+                    force: Number(attempt) > 1,
+                    cooldownMs: Number(attempt) > 1 ? 0 : OPTIONS.openCooldownMs,
+                });
                 rememberTempTab(opened);
                 if (!opened) {
-                    finishGreetingWait();
+                    finishGreetingWait(requestId);
                     throw new Error('浏览器拦截了聊天页弹窗，请允许 zhipin.com 弹出窗口后重试');
                 }
             };
@@ -2134,11 +2309,7 @@
                     const reason = jobInfo.talked_reason || '页面显示已沟通';
                     logger.add(`职位 [${jobInfo.title}] ${reason}，跳过打招呼`);
                     await api.createAction('already_contacted', { reason }, jobInfo, 'completed');
-                    await api.event('already_contacted', `${reason}: ${jobInfo.title}`, 'script', 'info', {
-                        title: jobInfo.title,
-                        url: href,
-                        reason,
-                    });
+                    await api.event('already_contacted', `${reason}: ${jobInfo.title}`, 'script', 'info', { title: jobInfo.title, url: href, reason });
                     finishJobProgress('已沟通跳过');
                     setTimeout(loop, 0);
                     return;
@@ -2151,9 +2322,7 @@
                     } else if (jobInfo.addUrl) {
                         const entryResult = await addToChatList(jobInfo.addUrl);
                         const redirectedChatUrl = tools.findChatUrlDeep(entryResult);
-                        if (redirectedChatUrl) {
-                            jobInfo.chatUrl = redirectedChatUrl;
-                        }
+                        if (redirectedChatUrl) jobInfo.chatUrl = redirectedChatUrl;
                     } else {
                         await api.event('greet_entry_skipped', '详情页没有独立打招呼入口，直接打开聊天页', 'script', 'info', { title: jobInfo.title, chatUrl: jobInfo.chatUrl });
                     }
@@ -2193,11 +2362,11 @@
                 }
             };
 
-            // 打招呼监听
+            // 鎵撴嫑鍛肩洃鍚?
             const greetListener = () => {
                 this.broadcast.on(this.bcTypes.SAY_HI, async (from, data) => {
                     if (from !== this.targets.chatGreet) return;
-                    // 要自我介绍
+                    // 瑕佽嚜鎴戜粙缁?
                     if (data.requestId) {
                         this.broadcast.reply(
                             from,
@@ -2208,34 +2377,9 @@
                         );
                         return;
                     }
-                    // 告知结果
-                    if (data.success) {
-                        const count = Number(data.sessionGreetCount || tools.getSessionGreetCount());
-                        logger.add(`打招呼成功，本轮计数 ${count}/${OPTIONS.sessionGreetLimit}`);
-                    }
-                    // 出错了
-                    else {
-                        logger.add(`打招呼失败${data.error ? ': ' + data.error : ''}`);
-                    }
-                    finishGreetingWait();
-                    finishJobProgress(data.success ? '打招呼成功' : '打招呼失败');
-                    if (!data.success && data.error && tools.isPlatformLimitError(data.error)) {
-                        await handlePageFailure(tools.platformLimitReason(data.error), 'platform_limit', 'chat_greet');
-                        return;
-                    }
-                    if (!data.success && data.error && tools.isElementMissingError(data.error)) {
-                        await handlePageFailure(String(data.error), 'element_retry', 'chat_greet');
-                        return;
-                    }
-                    if (!data.success && data.error && tools.isManualInterruptionError(data.error)) {
-                        await handleManualInterruption(tools.manualInterruptionReason(data.error), 'chat_greet');
-                        return;
-                    }
-                    if (data.success && isSessionLimitReached()) {
-                        await stopForSessionLimit(Number(data.sessionGreetCount || tools.getSessionGreetCount()));
-                        return;
-                    }
-                    loop();
+                    // 鍛婄煡缁撴灉
+                    await handleGreetingResult(data || {});
+                    return;
                 });
             };
 
@@ -2249,23 +2393,8 @@
                 });
             };
 
-            // 聊天页监听
-            const chatListener = () => {
-                this.broadcast.on(this.bcTypes.RUN, async (from, data) => {
-                    if (from !== this.targets.chat) return;
-                    if (data) {
-                        logger.divider();
-                        const hasNext = await nextPage();
-                        if (!hasNext) return;
-                        loop();
-                    } else {
-                        logger.add(`附件请求检查出错，已跳过自动聊天处理`);
-                        await api.event('chat_attachment_check_failed', '附件请求检查出错，未重新打开聊天页', 'script', 'error');
-                    }
-                });
-            };
 
-            // 心跳监听
+            // 蹇冭烦鐩戝惉
             const heartBeatListener = () => {
                 this.broadcast.on(this.bcTypes.HEART_BEAT, async (from, data) => {
                     this.broadcast.reply(
@@ -2278,7 +2407,7 @@
                 });
             }
 
-            // 循环
+            // 寰幆
             const loop = async () => {
                 if (loopRunning) return;
                 loopRunning = true;
@@ -2295,16 +2424,13 @@
                         await handleManualInterruption(interruption, 'search');
                         return;
                     }
-                    // 如果暂停，则跳过
                     if (this.pause) {
                         logger.add('暂停中...');
                         return;
                     }
-                    if (!(await ensureSessionLimitAvailable())) {
-                        return;
-                    }
+                    if (!(await ensureSessionLimitAvailable())) return;
                     logger.divider();
-                    // 判断职位链接是否为空
+
                     if (jobHrefs.length === 0) {
                         const hasNext = await nextPage();
                         if (hasNext) {
@@ -2320,15 +2446,15 @@
                         setTimeout(loop, OPTIONS.actionDelayMs);
                         return;
                     }
-                    // 抽取第一个
+
                     const href = jobHrefs.shift();
                     seenJobHrefs.add(href);
                     beginJobProgress(href);
-                    // 获取详情
-                    logger.add(`正在获取职位详情`);
+                    logger.add('正在获取职位详情');
                     setSearchAction(`获取职位详情: ${href}`);
                     const jobInfo = await getJobInfoWithRetry(href);
                     jobInfo.url = href;
+
                     if (!(await syncControlFromBackend(`暂停检查: 已读取职位详情 ${jobInfo.title}`))) {
                         finishJobProgress('暂停停止');
                         return;
@@ -2337,7 +2463,6 @@
                         finishJobProgress('本次上限停止');
                         return;
                     }
-                    // 如果聊过，下一个
                     if (jobInfo.talked) {
                         const reason = jobInfo.talked_reason || '页面显示已沟通';
                         logger.add(`职位 [${jobInfo.title}] ${reason}，下一个`);
@@ -2347,7 +2472,7 @@
                         setTimeout(loop, 0);
                         return;
                     }
-                    // 否则发送消息计算匹配度
+
                     if (!(await ensureSessionLimitAvailable())) {
                         finishJobProgress('本次上限停止');
                         return;
@@ -2367,12 +2492,8 @@
                     });
                     const score = analysis.total_score;
                     logger.add(`匹配度: ${score}`);
-                    if (analysis.match_reason) {
-                        logger.add(`判断原因: ${analysis.match_reason}`);
-                    }
-                    if (analysis.recommendation) {
-                        logger.add(`推荐动作: ${analysis.recommendation}`);
-                    }
+                    if (analysis.match_reason) logger.add(`判断原因: ${analysis.match_reason}`);
+                    if (analysis.recommendation) logger.add(`推荐动作: ${analysis.recommendation}`);
                     await api.event('job_analysis_finished', `职位分析完成: ${jobInfo.title} / ${score}`, 'script', 'info', { title: jobInfo.title, score, recommendation: analysis.recommendation, risks: analysis.risks || [] });
                     if (analysis.risks && analysis.risks.length) {
                         logger.add(`风险点: ${analysis.risks.join('；')}`);
@@ -2381,7 +2502,6 @@
                         finishJobProgress('暂停停止');
                         return;
                     }
-                    // 如果分数达到阈值，打个招呼
                     if (analysis.recommendation === 'greet' && score >= OPTIONS.thread) {
                         jobInfo.score = score;
                         if (!(await ensureSessionLimitAvailable())) {
@@ -2398,9 +2518,7 @@
                             return;
                         }
                         await sendGreetingFromSearch(jobInfo, href);
-                    }
-                    // 否则下一轮
-                    else {
+                    } else {
                         if (analysis.recommendation === 'wait_for_confirm') {
                             await recordGreetingSuggestion(jobInfo, analysis, href, analysis.match_reason || '模型建议人工确认，不自动打招呼');
                         } else {
@@ -2434,7 +2552,7 @@
                 }
             };
 
-            // 主函数
+            // 涓诲嚱鏁?
             const main = async () => {
                 try {
                     if (booting || started) return;
@@ -2453,7 +2571,7 @@
                     await ensureSessionForBackendRun(lastBackendRunId, 'program_start');
                     // 开始广播
                     startBroadcast();
-                    // 获取标签
+                    // 鑾峰彇鏍囩
                     setSearchAction('读取简历画像标签');
                     this.tags = await api.getTags();
                     if (!this.tags.length) {
@@ -2474,7 +2592,7 @@
                             hours: OPTIONS.recentProcessedHours,
                         });
                     }
-                    // 获取自我介绍
+                    // 鑾峰彇鑷垜浠嬬粛
                     setSearchAction('读取已确认打招呼用语');
                     this.introduce = await api.getIntroduce();
                     if (!this.introduce) {
@@ -2502,7 +2620,7 @@
                         }
                         return;
                     }
-                    // 开始循环
+                    // 寮€濮嬪惊鐜?
                     loop();
                 } catch (e) {
                     if (tools.isPlatformLimitError(e)) {
@@ -2526,7 +2644,7 @@
                 }
             };
 
-            // 初始化
+            // 鍒濆鍖?
             const init = async () => {
                 const res = await api.heartbeat('search', 'idle', '等待 CLI start', scriptHeartbeatDetail());
                 applyBackendConfig(res.config);
@@ -2568,16 +2686,16 @@
             init();
         }
 
-        // 详情页
+        // 璇︽儏椤?
         __detail() {
             const api = new Api();
-            // 注册广播
+            // 娉ㄥ唽骞挎挱
             const startBroadcast = () => {
                 this.__broadcast(this.targets.detail);
             };
             startBroadcast();
 
-            // 获取职位信息
+            // 鑾峰彇鑱屼綅淇℃伅
             const getJobInfo = async () => {
                 const platformLimit = tools.detectPlatformLimit();
                 if (platformLimit) throw new Error(`平台次数限制: ${platformLimit}`);
@@ -2613,19 +2731,19 @@
                     source: 'detail',
                 };
             };
-            // 来自搜索页
+            // 鏉ヨ嚜鎼滅储椤?
             const fromSearchPage = async () => {
                 const jobInfo = await getJobInfo();
-                // 把职位信息发送给搜索页
+                // 鎶婅亴浣嶄俊鎭彂閫佺粰鎼滅储椤?
                 await api.event('job_detail_received', `详情页读取职位: ${jobInfo.title}`, 'script', 'info', jobInfo);
                 await this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, jobInfo);
                 setTimeout(() => window.close(), 500);
             };
 
-            // 来自聊天页
+            // 鏉ヨ嚜鑱婂ぉ椤?
             const fromChatPage = async () => {
                 const jobInfo = await getJobInfo();
-                // 把职位信息发送给聊天页
+                // 鎶婅亴浣嶄俊鎭彂閫佺粰鑱婂ぉ椤?
                 await api.event('job_detail_received', `聊天页读取职位: ${jobInfo.title}`, 'script', 'info', jobInfo);
                 await this.broadcast.send(
                     this.targets.chat,
@@ -2635,10 +2753,10 @@
                 window.close();
             };
 
-            // 主函数
+            // 涓诲嚱鏁?
             const main = async () => {
                 try {
-                    // 判断来源
+                    // 鍒ゆ柇鏉ユ簮
                     const now = new Date().getTime();
                     const detailOpenedAt = tools.getTimestamp(this.targets.detail);
                     const chatOpenedAt = tools.getTimestamp(this.targets.chat);
@@ -2678,7 +2796,7 @@
                             error: String(e),
                             source: 'detail_error',
                         }).catch(async (sendError) => {
-                            await api.event('broadcast_send_failed', `详情页人工校验回传失败: ${sendError}`, 'script', 'error', {
+                            await api.event('broadcast_send_failed', `详情页人工处理回传失败: ${sendError}`, 'script', 'error', {
                                 path: location.pathname,
                                 windowName: window.name,
                             });
@@ -2709,15 +2827,58 @@
             main();
         }
 
-        // 聊天页
+        // 鑱婂ぉ椤?
         async __chat() {
             const pageApi = new Api();
-            // 注册广播
+            // 娉ㄥ唽骞挎挱
             const startBroadcast = (target = this.targets.chat) => {
                 this.__broadcast(target);
             };
 
             // 发送消息
+            const getSelfMessageSnapshot = () => {
+                const nodes = Array.from(document.querySelectorAll('.item-myself'));
+                const texts = nodes.map((node) => {
+                    const msgBox = node.querySelector(SELECTORS.ZHIPIN.CHAT.MSGCONTENT);
+                    return String((msgBox || node).innerText || (msgBox || node).textContent || '').trim();
+                }).filter(Boolean);
+                return {
+                    count: nodes.length,
+                    lastText: texts[texts.length - 1] || '',
+                };
+            };
+
+            const waitForMessageSendConfirmed = async (text, inputEl, beforeSnapshot, timeout = 7000) => {
+                const expectedPrefix = String(text || '').trim().slice(0, 12);
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < timeout) {
+                    const afterSnapshot = getSelfMessageSnapshot();
+                    const inputText = String(
+                        ('value' in inputEl ? inputEl.value : (inputEl.innerText || inputEl.textContent)) || ''
+                    ).trim();
+                    const messageAdded = afterSnapshot.count > beforeSnapshot.count;
+                    const messageMatches = expectedPrefix && afterSnapshot.lastText.includes(expectedPrefix);
+                    const inputCleared = !inputText || !inputText.includes(expectedPrefix);
+                    if (messageMatches || (messageAdded && inputCleared)) {
+                        return {
+                            confirmed: true,
+                            beforeCount: beforeSnapshot.count,
+                            afterCount: afterSnapshot.count,
+                            lastText: afterSnapshot.lastText.slice(0, 80),
+                            inputCleared,
+                        };
+                    }
+                    await tools.asyncSleep(300);
+                }
+                const afterSnapshot = getSelfMessageSnapshot();
+                return {
+                    confirmed: false,
+                    beforeCount: beforeSnapshot.count,
+                    afterCount: afterSnapshot.count,
+                    lastText: afterSnapshot.lastText.slice(0, 80),
+                };
+            };
+
             const sendMsg = (text) => {
                 return new Promise(async (resolve, reject) => {
                     try {
@@ -2750,12 +2911,23 @@
                             };
                             throw error;
                         }
+                        const beforeSnapshot = getSelfMessageSnapshot();
                         btn.click();
-                        await tools.asyncSleep(500);
+                        const confirmation = await waitForMessageSendConfirmed(text, ipt, beforeSnapshot);
+                        if (!confirmation.confirmed) {
+                            const error = new Error('message_send_unconfirmed');
+                            error.detail = {
+                                button: tools.elementBrief(btn),
+                                input: tools.elementBrief(ipt),
+                                ...confirmation,
+                            };
+                            throw error;
+                        }
                         await pageApi.event('message_send_finished', '消息已点击发送', 'script', 'info', {
                             button: tools.elementBrief(btn),
                             input: tools.elementBrief(ipt),
                             length: String(text).length,
+                            confirmation,
                         });
                         resolve();
                     } catch (e) {
@@ -2765,11 +2937,35 @@
                 })
             };
 
-            // 打招呼
-            const sayHi = async () => {
+            // 鎵撴嫑鍛?
+            const closeTemporaryChatPage = async (requestId) => {
+                tools.releaseGreetClaim(requestId);
+                setTimeout(() => {
+                    window.close();
+                    setTimeout(() => {
+                        pageApi.event('temporary_chat_close_failed', '临时打招呼页未能自动关闭，可手动关闭', 'script', 'warning', {
+                            requestId,
+                            url: location.href,
+                        }).catch(() => null);
+                        banner('临时打招呼页已完成，可关闭');
+                    }, 1500);
+                }, 800);
+            };
+
+            const sayHi = async (claim = {}) => {
+                const claimedContext = claim.context || tools.getGreetContext();
+                const greetRequestId = claimedContext.requestId || '';
+                const greetAttempt = Number(claimedContext.attempt || 1);
+                const ensureCurrentGreetRequest = () => {
+                    if (!greetRequestId) return;
+                    const current = tools.getGreetContext();
+                    if (current.requestId !== greetRequestId) {
+                        throw new Error('greet_request_stale');
+                    }
+                };
                 startBroadcast(this.targets.chatGreet);
 
-                // 心跳
+                // 蹇冭烦
                 let count = 0;
                 let heartbeatActive = true;
                 const loop = () => {
@@ -2795,16 +2991,15 @@
                 try {
                     await pageApi.heartbeat('chat_greet', 'running', '准备打招呼');
                     await pageApi.event('greet_started', '打招呼窗口准备发送', 'script');
-                    const introduce = (await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI)).introduce;
+                    const introduce = (await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI, {
+                        greetRequestId,
+                        attempt: greetAttempt,
+                    })).introduce;
                     if (!introduce) throw new Error('未启用打招呼用语');
                     await tools.actionSleep();
+                    ensureCurrentGreetRequest();
                     await sendMsg(introduce);
-                    let greetContext = {};
-                    try {
-                        greetContext = JSON.parse(localStorage.getItem('__chatbot_zhou_greet_context') || '{}');
-                    } catch (e) {
-                        greetContext = {};
-                    }
+                    const greetContext = claimedContext || {};
                     await pageApi.createAction('greet', {
                         message: introduce,
                         context: greetContext,
@@ -2816,189 +3011,39 @@
                         `打招呼消息已发送，本轮计数 ${sessionGreetCount}`,
                         'script',
                         'info',
-                        { sessionGreetCount, runId: tools.getGreetSession().runId }
+                        { sessionGreetCount, runId: tools.getGreetSession().runId, requestId: greetRequestId, attempt: greetAttempt }
                     );
                     heartbeatActive = false;
-                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true, sessionGreetCount }).catch(async (sendError) => {
+                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, {
+                        success: true,
+                        sessionGreetCount,
+                        greetRequestId,
+                        attempt: greetAttempt,
+                    }).catch(async (sendError) => {
                         await pageApi.event('broadcast_send_failed', `打招呼结果回传失败: ${sendError}`, 'script', 'error');
                     }).finally(() => {
                         this.broadcast.destroy();
-                        setTimeout(() => window.close(), 800);
+                        closeTemporaryChatPage(greetRequestId);
                     });
                 } catch (e) {
                     heartbeatActive = false;
                     await pageApi.heartbeat('chat_greet', 'error', String(e));
                     await pageApi.event('greet_failed', `打招呼失败: ${e}`, 'script', 'error');
-                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: false, error: String(e) }).catch(async (sendError) => {
+                    this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, {
+                        success: false,
+                        error: String(e),
+                        greetRequestId,
+                        attempt: greetAttempt,
+                        retryable: !(tools.isPlatformLimitError(e) || tools.isManualInterruptionError(e)),
+                    }).catch(async (sendError) => {
                         await pageApi.event('broadcast_send_failed', `打招呼失败结果回传失败: ${sendError}`, 'script', 'error');
                     }).finally(() => {
                         this.broadcast.destroy();
-                        setTimeout(() => window.close(), 800);
+                        closeTemporaryChatPage(greetRequestId);
                     });
                 }
             };
 
-            // 获取聊天记录信息
-            const getChatInfo = async () => {
-                const ctn = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.HISTORYCTN);
-
-                const getMsgs = async () => {
-                    const lis = Array.from(ctn.querySelectorAll(SELECTORS.ZHIPIN.CHAT.USEFULMSG));
-                    // 提取历史记录
-                    const msgs = [];
-                    lis.forEach(li => {
-                        const role = li.classList.contains('item-friend') ? 'user' : 'assistant';
-                        const msgBox = li.querySelector(SELECTORS.ZHIPIN.CHAT.MSGCONTENT);
-                        if (!msgBox) return;
-                        msgs.push({
-                            role,
-                            content: msgBox.innerText,
-                        });
-                    });
-                    // 只识别 BOSS 官方附件简历请求卡片。
-                    let needResume = 0;
-                    let resumeSended = false;
-                    let confirmAddr = false;
-                    let resumeRequestCard = null;
-                    // 判断是否有过明确弹窗
-                    const rlis = lis.reverse();
-                    for (const li of rlis) {
-                        if (li.classList.contains('item-myself')) {
-                            break;
-                        }
-                        const bossGreen = li.querySelector('.boss-green');
-                        const dialog = li.querySelector('.item-dialog');
-                        if (bossGreen) {
-                            const t = bossGreen.innerText;
-                            if (t.includes('附件简历') && t.includes('是否同意') && t.includes('同意')) {
-                                needResume = 2;
-                                resumeRequestCard = li;
-                            }
-                        } else if (dialog) {
-                            const t = dialog.querySelector('.msg-dialog-title').innerText;
-                            if (t.indexOf('您是否接受此工作地点?') !== -1) {
-                                confirmAddr = true;
-                            }
-                        }
-                    }
-                    // 判断是否发过简历
-                    const bossGreen = ctn.querySelectorAll('.boss-green');
-                    if (bossGreen.length) {
-                        bossGreen.forEach(el => {
-                            const t = el.innerText;
-                            if (t.indexOf('点击预览附件简历') !== -1) {
-                                resumeSended = true;
-                            }
-                        });
-                    }
-                    return {
-                        msgs,
-                        needResume,
-                        resumeSended,
-                        confirmAddr,
-                        resumeRequestCard,
-                        talked: !msgs.every(d => d.role === 'user'),
-                        jobEl: (await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.JOBEL)).querySelector(SELECTORS.ZHIPIN.CHAT.JOBCITY)
-                    };
-                };
-
-                const scroll2Top = async () => {
-                    if (ctn.scrollTop === 0) return;
-                    ctn.scrollTop = 0;
-                    await tools.asyncSleep(300);
-                    await scroll2Top();
-                };
-
-                // 滚动到顶部
-                await tools.asyncSleep(300);
-                await scroll2Top();
-                // 获取聊天记录
-                return await getMsgs();
-            };
-
-            // 发送简历
-            const sendResume = async (context = {}, requestCard = null) => {
-                await pageApi.event('attachment_auto_send_started', 'BOSS 官方卡片请求简历，自动发送附件简历', 'script', 'info', context);
-                if (requestCard) {
-                    const agreeButton = Array.from(requestCard.querySelectorAll('button, a, span, div'))
-                        .find(el => String(el.innerText || el.textContent || '').trim() === '同意');
-                    if (agreeButton) {
-                        const clickable = agreeButton.closest('button, a') || agreeButton;
-                        clickable.click();
-                        await tools.actionSleep(800);
-                        await pageApi.createAction('send_resume', {
-                            reason: 'BOSS 官方卡片请求简历，已点击同意',
-                            context,
-                        }, context, 'completed');
-                        await pageApi.event('attachment_sent', '已通过官方卡片同意发送简历', 'script', 'info', context);
-                        return;
-                    }
-                }
-                await pageApi.createAction('send_resume_suggestion', {
-                    reason: '未找到 BOSS 官方简历请求卡片内的同意按钮，未执行发送',
-                    context,
-                }, context, 'completed');
-                await pageApi.event('attachment_send_skipped', '官方简历请求卡片识别失败，未点击聊天工具栏简历按钮', 'script', 'error', context);
-                status('未找到官方卡片同意按钮，已跳过简历发送');
-            };
-
-            let logger = null;
-            // 给搜索页同步状态
-            const status = (text) => {
-                logger && logger.add(text);
-                pageApi.heartbeat('chat', 'running', text).catch(() => null);
-                this.broadcast && this.broadcast.send(
-                    this.targets.search,
-                    this.bcTypes.STATUS,
-                    text
-                ).catch(() => null);
-            };
-            // 聊天
-            const chat = async () => {
-                // 开始广播
-                startBroadcast(this.targets.chat);
-                // 心跳
-                let heartbeatActive = true;
-                const loop = async () => {
-                    if (!heartbeatActive || !this.broadcast) return;
-                    const backendStatus = await pageApi.heartbeat('chat', 'running', '附件请求监听');
-                    applyBackendConfig(backendStatus.config);
-                    if (backendStatus.control === 'paused' || backendStatus.control === 'stopped') {
-                        status('CLI 已暂停附件监听');
-                        heartbeatActive = false;
-                        return;
-                    }
-                    setTimeout(loop, 1000);
-                };
-                loop();
-
-                const backendStatus = await pageApi.heartbeat('chat', 'running', '检查当前聊天页官方简历请求卡片');
-                applyBackendConfig(backendStatus.config);
-                await pageApi.event('chat_attachment_check_started', '检查当前聊天页官方简历请求卡片', 'script');
-                if (backendStatus.control === 'paused' || backendStatus.control === 'stopped') {
-                    status('CLI 已暂停附件监听');
-                    heartbeatActive = false;
-                    return;
-                }
-                try {
-                    const chatInfo = await getChatInfo();
-                    const title = chatInfo.jobEl ? chatInfo.jobEl.innerText : document.title;
-                    if (chatInfo.needResume === 2 && !chatInfo.resumeSended) {
-                        status('检测到 BOSS 官方简历请求卡片，自动发送简历附件');
-                        await sendResume({ title }, chatInfo.resumeRequestCard);
-                        status('简历附件处理完成');
-                    } else {
-                        await pageApi.event('chat_attachment_noop', '当前聊天页未发现官方简历请求卡片，跳过', 'script', 'info', {
-                            title,
-                        });
-                    }
-                } catch (e) {
-                    status('检查当前聊天页附件请求出错');
-                    await pageApi.event('chat_attachment_check_failed', `检查当前聊天页附件请求出错: ${e}`, 'script', 'error');
-                } finally {
-                    heartbeatActive = false;
-                }
-            };
 
             // 主函数
             const main = async () => {
@@ -3006,42 +3051,76 @@
                 const now = new Date().getTime();
                 const greetOpenedAt = tools.getTimestamp(this.targets.chatGreet);
                 const greetAge = greetOpenedAt ? now - greetOpenedAt : null;
-                let greetContext = {};
-                try {
-                    greetContext = JSON.parse(localStorage.getItem('__chatbot_zhou_greet_context') || '{}');
-                } catch (e) {
-                    greetContext = {};
+                let greetContext = tools.getGreetContext();
+                const greetClaim = tools.claimGreetContext();
+                if (greetClaim.context && greetClaim.context.requestId) {
+                    greetContext = greetClaim.context;
                 }
                 const contextChatUrl = tools.normalUrl(greetContext.chatUrl || '');
                 const currentChatUrl = tools.normalUrl(location.href) || location.href;
                 const isLikelySameChat = contextChatUrl
                     ? currentChatUrl.split('#')[0] === contextChatUrl.split('#')[0]
                     : Boolean(greetContext.url || greetContext.title || greetContext.greeting);
-                const isGreet = greetAge !== null
-                    && greetAge < OPTIONS.timestampTimeout
-                    && isLikelySameChat;
+                const isRecentGreetWindow = greetAge !== null && greetAge < OPTIONS.timestampTimeout;
+                const hasGreetContext = Boolean(greetContext && (
+                    greetContext.requestId
+                    || greetContext.chatUrl
+                    || greetContext.url
+                    || greetContext.title
+                    || greetContext.greeting
+                ));
+                const fallbackClaim = (!greetClaim.claimed && isRecentGreetWindow && hasGreetContext)
+                    ? tools.claimTimestampGreetFallback(greetOpenedAt)
+                    : { claimed: false, reason: '' };
+                const canUseTimestampFallback = isRecentGreetWindow
+                    && hasGreetContext
+                    && !greetClaim.claimed
+                    && fallbackClaim.claimed
+                    && !['claimed_by_other_page'].includes(String(greetClaim.reason || ''));
+                const isGreet = Boolean(greetClaim.claimed) || canUseTimestampFallback;
 
                 if (isGreet) {
-                    sayHi();
+                    const effectiveClaim = greetClaim.claimed
+                        ? greetClaim
+                        : {
+                            claimed: true,
+                            reason: 'timestamp_fallback',
+                            context: {
+                                ...greetContext,
+                                createdAt: Date.now(),
+                                attempt: Number(greetContext.attempt || 1),
+                                maxAttempts: Number(greetContext.maxAttempts || OPTIONS.greetMaxAttempts || 3),
+                            },
+                        };
+                    if (canUseTimestampFallback) {
+                        await pageApi.event('greet_chat_timestamp_fallback', '打招呼页未认领到 requestId，已按 chatGreet 时间戳继续', 'script', 'warning', {
+                            claimReason: greetClaim.reason || '',
+                            greetAge,
+                            contextChatUrl,
+                            currentChatUrl,
+                            hasContext: hasGreetContext,
+                            fallbackClaimReason: fallbackClaim.reason || '',
+                        });
+                    }
+                    if (!isLikelySameChat) {
+                        await pageApi.event('greet_chat_url_mismatch', '打招呼聊天页 URL 与打开时 URL 不一致，已按 requestId 继续', 'script', 'warning', {
+                            requestId: greetContext.requestId || '',
+                            contextChatUrl,
+                            currentChatUrl,
+                        });
+                    }
+                    sayHi(effectiveClaim);
                 }
                 else {
                     // 日志
-                    logger = new Logger();
-                    logger.runBtn.remove();
-                    logger.clearBtn.remove();
-                    // 等待加载
-                    await tools.asyncSleep(3000);
-                    chat()
-                        .then(async () => {
-                            status('附件请求检查完毕');
-                            await this.broadcast.send(this.targets.search, this.bcTypes.RUN, true);
-                        })
-                        .catch(async () => {
-                            status('附件请求检查出错');
-                            await this.broadcast.send(this.targets.search, this.bcTypes.RUN, false);
-                        }).finally(() => {
-                            this.broadcast.destroy();
-                        });
+                    await pageApi.heartbeat('chat', 'idle', '普通聊天页已忽略：本工具只执行打招呼');
+                    await pageApi.event('chat_ignored_not_greet_page', '普通聊天页已忽略：本工具只执行打招呼，不处理附件或简历卡片', 'script', 'info', {
+                        path: location.pathname,
+                        url: location.href,
+                        greetAge,
+                        claimReason: greetClaim.reason || '',
+                        hasGreetContext,
+                    });
                 }
             };
             main();
