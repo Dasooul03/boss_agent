@@ -18,8 +18,7 @@
 
 (function () {
     'use strict';
-
-    // OriginalAuthor: 鍢庡槪鑴嗙殑璐濈埛
+    // OriginalAuthor: 嘎嘎脆的贝爷
 
     // 配置项
     const OPTIONS = {
@@ -55,15 +54,15 @@
         }
     }
 
-    // 鍏冪礌閫夋嫨鍣?
+    // 元素选择器
     const SELECTORS = {
         ZHIPIN: {
             SEARCH: {
                 SEARCHINPUT: 'input', // 搜索框
-                SEARCHBTN: '.search-btn', // 鎼滅储鎸夐挳
-                JOBLISTCTN: '.job-list-container', // 鑱屼綅鍒楄〃瀹瑰櫒
-                JOBLIST: '.rec-job-list', // 鑱屼綅鍒楄〃
-                JOBHREFS: '.job-card-box .job-name', // 鑱屼綅閾炬帴
+                SEARCHBTN: '.search-btn', // 搜索按钮
+                JOBLISTCTN: '.job-list-container', // 职位列表容器
+                JOBLIST: '.rec-job-list', // 职位列表
+                JOBHREFS: '.job-card-box .job-name', // 职位链接
                 JOBLIST_CANDIDATES: ['.rec-job-list', '.job-list-box', '.job-list-container', '.search-job-result'],
                 JOBHREFS_CANDIDATES: ['.job-card-box .job-name', '.job-card-wrapper .job-title a', 'a[href*="/job_detail/"]'],
             },
@@ -80,9 +79,9 @@
                 ], // 开始聊天按钮
                 NAMEBOX: '.name', // 职位名称盒子
                 JOBNAME: 'h1', // 职位名称
-                SALARY: '.salary', // 鑱屼綅钖祫
+                SALARY: '.salary', // 职位薪资
                 DETAIL: '.job-sec-text', // 职位详情
-                CHATURL: 'redirect-url', // 鑱婂ぉ閾炬帴
+                CHATURL: 'redirect-url', // 聊天链接
                 JOBNAME_CANDIDATES: ['.job-banner .name h1', '.job-primary .name h1', '.info-primary .name h1', '.name h1', 'h1'],
                 SALARY_CANDIDATES: ['.job-banner .salary', '.job-primary .salary', '.info-primary .salary', '.name .salary', '.salary'],
                 DETAIL_CANDIDATES: ['.job-sec-text', '.job-detail-section .text', '.job-description', '[class*="job-sec-text"]'],
@@ -90,7 +89,7 @@
                 CITY_CANDIDATES: ['.job-location', '.location-address', '.job-address', '.job-area', '.city'],
             },
             CHAT: {
-                // 鑱婂ぉ
+                // 聊天
                 CHATINPUT: [
                     '#chat-input',
                     '.chat-input [contenteditable="true"]',
@@ -98,30 +97,30 @@
                     'textarea[id*="chat"]',
                     'textarea[class*="chat"]',
                     '[contenteditable="true"]',
-                ], // 鑱婂ぉ杈撳叆妗?
+                ], // 聊天输入框
                 MSGSEND: [
                     '.btn-send',
                     '[class*="btn-send"]',
                     '[ka*="send"]',
                     'button[class*="send"]:not(.disabled)',
                 ], // 消息发送按钮
-                // 鑱婂ぉ璁板綍
-                HISTORYCTN: '.chat-message', // 鑱婂ぉ璁板綍瀹瑰櫒
+                // 聊天记录
+                HISTORYCTN: '.chat-message', // 聊天记录容器
                 USEFULMSG: '.item-friend,.item-myself', // 有效的文字聊天记录项
-                MSGCONTENT: '.message-content .text', // 鑱婂ぉ璁板綍鍐呭
-                // 鑱屼綅
-                JOBEL: '*[ka=geek_chat_job_detail]', // 鑱屼綅鍏冪礌
-                JOBCITY: '.city', // 鑱屼綅鍩庡競
+                MSGCONTENT: '.message-content .text', // 聊天记录内容
+                // 职位
+                JOBEL: '*[ka=geek_chat_job_detail]', // 职位元素
+                JOBCITY: '.city', // 职位城市
             }
         },
     };
 
-    // 鎼滅储璺緞
+    // 搜索路径
     const SEARCHPATH = {
         zhipin: '/web/geek/job',
     };
 
-    // 鐧藉悕鍗?
+    // 白名单
     const WHITELIST = {
         zhipin: {
             detail: ['/job_detail', '/web/geek/job_detail'],
@@ -662,8 +661,8 @@
     };
 
     /**
-     * 妯箙
-     * @param {string} text 鏄剧ず鐨勬枃鏈?
+     * 横幅
+     * @param {string} text 显示的文本
      */
     function banner(text) {
         const el = document.createElement('div');
@@ -687,9 +686,9 @@
     }
 
     /**
-     * 杞崲鏃堕棿
-     * @param {number} seconds 绉掓暟
-     * @returns {string} 杞崲鍚庣殑鏃堕棿瀛楃涓?
+     * 转换时间
+     * @param {number} seconds 秒数
+     * @returns {string} 转换后的时间字符串
      */
     function convertTime(seconds) {
         const hours = Math.floor(seconds / 3600);
@@ -709,14 +708,14 @@
     }
 
     class WebBroadcast {
-        static ID_COUNTER = 0; // 鑷搴忓垪锛岄伩鍏嶆椂闂存埑鍐茬獊
+        static ID_COUNTER = 0; // 自增序列，避免时间戳冲突
 
         /**
-         * @param {string} name 棰戦亾鍚嶇О
-         * @param {string} target 褰撳墠椤甸潰鏍囪瘑
-         * @param {object} [options] 閰嶇疆椤?
-         * @param {number} [options.retry=3] 鍙戦€佸け璐ラ噸璇曟鏁?
-         * @param {number} [options.retryInterval=1000] 閲嶈瘯闂撮殧(姣)
+         * @param {string} name 频道名称
+         * @param {string} target 当前页面标识
+         * @param {object} [options] 配置项
+         * @param {number} [options.retry=3] 发送失败重试次数
+         * @param {number} [options.retryInterval=1000] 重试间隔(毫秒)
          */
         constructor(name, target, options = {}) {
             this.name = name;
@@ -727,13 +726,13 @@
             this.pendingResponses = {};
             this.pendingReceives = {};
 
-            // 鍒濆鍖栭€氫俊閫氶亾
+            // 初始化通信通道
             this.initChannel();
         }
 
-        /* -------------------- 鏍稿績閫氫俊閫昏緫 -------------------- */
+        /* -------------------- 核心通信逻辑 -------------------- */
         initChannel() {
-            // 浼樺厛浣跨敤 BroadcastChannel
+            // 优先使用 BroadcastChannel
             if (typeof BroadcastChannel !== 'undefined') {
                 this.setupBroadcastChannel();
             } else {
@@ -755,7 +754,7 @@
             this.channelType = 'storage';
             this.storageKey = `web_broadcast_${this.name}`;
 
-            // 鐩戝惉 storage 浜嬩欢
+            // 监听 storage 事件
             window.addEventListener('storage', (e) => {
                 if (e.key === this.storageKey && e.newValue) {
                     const message = JSON.parse(e.newValue);
@@ -768,12 +767,12 @@
             const resp = e.data;
             if (![this.target, 'all'].includes(resp.to)) return;
 
-            // 澶勭悊浜嬩欢鐩戝惉
+            // 处理事件监听
             if (this.evts[resp.type]) {
                 Promise.resolve().then(() => this.evts[resp.type](resp.from, resp.data));
             }
 
-            // 澶勭悊 receive 绛夊緟
+            // 处理 receive 等待
             const receiveKey = `${resp.from}-${resp.type}`;
             if (this.pendingReceives[receiveKey]) {
                 const pending = this.pendingReceives[receiveKey];
@@ -782,7 +781,7 @@
                 delete this.pendingReceives[receiveKey];
             }
 
-            // 澶勭悊 sendAndReceive 鍝嶅簲
+            // 处理 sendAndReceive 响应
             if (this.pendingResponses[resp.data?.requestId]) {
                 const pending = this.pendingResponses[resp.data.requestId];
                 pending.resolve(resp.data);
@@ -791,7 +790,7 @@
             }
         }
 
-        /* -------------------- 娑堟伅鏀跺彂鏂规硶 -------------------- */
+        /* -------------------- 消息收发方法 -------------------- */
         send(to, type, data = null, attempt = 0) {
             const message = { from: this.target, to, type, data };
 
@@ -800,7 +799,7 @@
                     if (this.channelType === 'broadcast') {
                         this.channel.postMessage(message);
                     } else {
-                        // storage 鏂规闇€瑕佸厛鍐欏叆鍐嶅垹闄わ紝瑙﹀彂浜嬩欢
+                        // storage 方案需要先写入再删除，以触发事件
                         localStorage.setItem(this.storageKey, JSON.stringify(message));
                         localStorage.removeItem(this.storageKey);
                     }
@@ -820,7 +819,7 @@
             const key = `${from}-${type}`;
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
-                    reject(new WebBroadcastError('TIMEOUT', `鎺ユ敹瓒呮椂: ${type}`));
+                    reject(new WebBroadcastError('TIMEOUT', `接收超时: ${type}`));
                     delete this.pendingReceives[key];
                 }, timeout);
 
@@ -840,7 +839,7 @@
 
 
                 this.pendingResponses[requestId] = { resolve, reject, timer };
-                // 鍙戦€佹椂鎼哄甫 responseType
+                // 发送时携带 responseType
                 this.send(to, type, { ...data, requestId, responseType });
             });
         }
@@ -850,7 +849,7 @@
             return this.send(originalFrom, finalResponseType, { ...data, requestId });
         }
 
-        /* -------------------- 宸ュ叿鏂规硶 -------------------- */
+        /* -------------------- 工具方法 -------------------- */
         generateRequestId() {
             const time = Date.now().toString(36);
             const random = Math.random().toString(36).slice(2, 6);
@@ -885,16 +884,16 @@
         }
     }
 
-    // api璇锋眰
+    // API 请求
     class Api {
         constructor() { }
 
         /**
-         * 灏佽璇锋眰
-         * @param {string} path 璇锋眰璺緞
-         * @param {string} method 璇锋眰鏂规硶
-         * @param {any} data 璇锋眰鏁版嵁
-         * @returns {Promise<any>} 璇锋眰缁撴灉
+         * 封装请求
+         * @param {string} path 请求路径
+         * @param {string} method 请求方法
+         * @param {any} data 请求数据
+         * @returns {Promise<any>} 请求结果
          */
         __http(path, method = 'GET', data = null) {
             return new Promise(async (resolve, reject) => {
@@ -902,8 +901,8 @@
                 const hasPromiseRequest = typeof GM !== 'undefined' && GM.xmlHttpRequest;
                 const request = hasLegacyRequest ? GM_xmlhttpRequest : (hasPromiseRequest ? GM.xmlHttpRequest : null);
                 if (!request) {
-                    banner('缂哄皯 GM.xmlHttpRequest 鏉冮檺');
-                    reject('缂哄皯 GM.xmlHttpRequest 鏉冮檺');
+                    banner('缺少 GM.xmlHttpRequest 权限');
+                    reject('缺少 GM.xmlHttpRequest 权限');
                     return;
                 }
                 const handleResponse = (resp) => {
@@ -916,8 +915,8 @@
                         const raw = resp.responseText ?? resp.response ?? '{}';
                         resolve(typeof raw === 'string' ? JSON.parse(raw) : raw);
                     } catch (e) {
-                        banner('鍝嶅簲瑙ｆ瀽澶辫触');
-                        reject(`鍝嶅簲瑙ｆ瀽澶辫触: ${e}`);
+                        banner('响应解析失败');
+                        reject(`响应解析失败: ${e}`);
                     }
                 };
                 const handleError = (err) => {
@@ -949,7 +948,7 @@
         }
 
         /**
-         * 鑾峰彇鑷垜浠嬬粛
+         * 获取自我介绍
          */
         getIntroduce() {
             return new Promise((resolve, reject) => this.__http('/get-introduce').then(res => {
@@ -958,7 +957,7 @@
         }
 
         /**
-         * 鑾峰彇鏍囩
+         * 获取标签
          */
         getTags() {
             return new Promise((resolve, reject) => this.__http('/tags').then(res => {
@@ -973,7 +972,7 @@
         }
 
         /**
-         * 涓婃姤鑴氭湰鐘舵€?
+         * 上报脚本状态
          */
         heartbeat(page, status = 'running', currentAction = '', detail = {}) {
             return this.__http('/script/heartbeat', 'POST', JSON.stringify({
@@ -1006,14 +1005,14 @@
         }
 
         /**
-         * 缁撴瀯鍖栬亴浣嶅垎鏋?
+         * 结构化职位分析
          */
         analyzeJob(jobInfo) {
             return this.__http('/jobs/analyze', 'POST', JSON.stringify(jobInfo)).then(res => res.analysis);
         }
 
         /**
-         * 鍒涘缓寰呯‘璁ゅ姩浣?
+         * 创建待确认动作
          */
         createAction(actionType, payload = {}, jobInfo = {}, status = 'pending') {
             return this.__http('/actions', 'POST', JSON.stringify({
@@ -1168,42 +1167,42 @@
         }
     }
 
-    // boss 鐩磋仒
+    // BOSS 直聘
     class Zhipin {
         constructor() {
-            // 绐楀彛鏍囩
+            // 窗口标签
             this.targets = {
                 search: "__zhipin_search",
                 detail: "__zhipin_detail",
                 chat: "__zhipin_chat",
                 chatGreet: "__zhipin_chat_greet",
             };
-            // 骞挎挱绫诲瀷
+            // 广播类型
             this.bcTypes = {
-                // 鍏ㄥ眬
+                // 全局
                 STATUS: "status",
                 RUN: 'run',
                 DIVIDER: 'divider',
                 INTRODUCE: 'introduce',
                 HEART_BEAT: 'heart-beat',
-                // 鑱婂ぉ椤靛拰鑱屼綅璇︽儏椤?
+                // 聊天页和职位详情页
                 GET_JOB_INFO: 'get-job-info',
                 SAY_HI: 'say-hi',
             };
-            // 鐧藉悕鍗?
+            // 白名单
             this.whiteList = WHITELIST.zhipin;
-            // 璁板綍鐘舵€?
+            // 记录状态
             this.pause = false;
             this.tags = [];
             this.introduce = ''
         }
 
-        // 娉ㄥ唽骞挎挱
+        // 注册广播
         __broadcast(target) {
             this.broadcast = new WebBroadcast('__zhipin_broadcast', target);
         }
 
-        // 鎼滅储椤?
+        // 搜索页
         async __search(tagIdx) {
             // api
             const api = new Api();
@@ -1220,13 +1219,13 @@
             let totalProcessedMs = 0;
             let currentJobProgress = null;
             let page = 0;
-            // 璁板綍鑱屼綅閾炬帴
+            // 记录职位链接
             let jobHrefs = [];
             let elsLen = 0;
             const seenJobHrefs = new Set();
             const backendProcessedHrefs = new Set();
             let lastJobListEventKey = '';
-            // 缂撳瓨
+            // 缓存
             let started = false;
             let booting = false;
             let loopRunning = false;
@@ -1878,16 +1877,16 @@
                 return false;
             };
 
-            // 寮€濮嬪箍鎾?
+            // 开始广播
             const startBroadcast = () => {
                 this.__broadcast(this.targets.search);
-                // 鎺ユ敹鑱婂ぉ椤电殑娑堟伅鎻愰啋
+                // 接收聊天页的消息提醒
                 this.broadcast.on(this.bcTypes.STATUS, (from, data) => {
                     if (from === this.targets.chat) {
                         logger.add(data);
                     }
                 });
-                // 鍙戦€佽嚜鎴戜粙缁?
+                // 发送自我介绍
                 this.broadcast.on(this.bcTypes.INTRODUCE, (from, data) => {
                     this.broadcast.reply(
                         from,
@@ -1897,14 +1896,14 @@
                         data.responseType
                     );
                 });
-                // 鍒嗗壊绾?
+                // 分割线
                 this.broadcast.on(this.bcTypes.DIVIDER, () => {
                     logger.divider();
                 });
-                // 鐩戝惉鎵撴嫑鍛?
+                // 监听打招呼
                 greetListener();
-                // 鐩戝惉鑱婂ぉ椤?
-                // 蹇冭烦鐩戝惉
+                // 监听聊天页
+                // 心跳监听
                 heartBeatListener();
             };
 
@@ -2203,7 +2202,7 @@
                 }
             };
 
-            // 娣诲姞鍒拌亰澶╁垪琛?
+            // 添加到聊天列表
             const addToChatList = async (url) => {
                 if (!url) throw new Error('缺少打招呼请求链接');
                 try {
@@ -2362,11 +2361,11 @@
                 }
             };
 
-            // 鎵撴嫑鍛肩洃鍚?
+            // 打招呼监听
             const greetListener = () => {
                 this.broadcast.on(this.bcTypes.SAY_HI, async (from, data) => {
                     if (from !== this.targets.chatGreet) return;
-                    // 瑕佽嚜鎴戜粙缁?
+                    // 需要自我介绍
                     if (data.requestId) {
                         this.broadcast.reply(
                             from,
@@ -2394,7 +2393,7 @@
             };
 
 
-            // 蹇冭烦鐩戝惉
+            // 心跳监听
             const heartBeatListener = () => {
                 this.broadcast.on(this.bcTypes.HEART_BEAT, async (from, data) => {
                     this.broadcast.reply(
@@ -2552,7 +2551,7 @@
                 }
             };
 
-            // 涓诲嚱鏁?
+            // 主函数
             const main = async () => {
                 try {
                     if (booting || started) return;
@@ -2571,7 +2570,7 @@
                     await ensureSessionForBackendRun(lastBackendRunId, 'program_start');
                     // 开始广播
                     startBroadcast();
-                    // 鑾峰彇鏍囩
+                    // 获取标签
                     setSearchAction('读取简历画像标签');
                     this.tags = await api.getTags();
                     if (!this.tags.length) {
@@ -2592,7 +2591,7 @@
                             hours: OPTIONS.recentProcessedHours,
                         });
                     }
-                    // 鑾峰彇鑷垜浠嬬粛
+                    // 获取自我介绍
                     setSearchAction('读取已确认打招呼用语');
                     this.introduce = await api.getIntroduce();
                     if (!this.introduce) {
@@ -2620,7 +2619,7 @@
                         }
                         return;
                     }
-                    // 寮€濮嬪惊鐜?
+                    // 开始循环
                     loop();
                 } catch (e) {
                     if (tools.isPlatformLimitError(e)) {
@@ -2644,7 +2643,7 @@
                 }
             };
 
-            // 鍒濆鍖?
+            // 初始化
             const init = async () => {
                 const res = await api.heartbeat('search', 'idle', '等待 CLI start', scriptHeartbeatDetail());
                 applyBackendConfig(res.config);
@@ -2686,10 +2685,10 @@
             init();
         }
 
-        // 璇︽儏椤?
+        // 详情页
         __detail() {
             const api = new Api();
-            // 娉ㄥ唽骞挎挱
+            // 注册广播
             const startBroadcast = () => {
                 this.__broadcast(this.targets.detail);
             };
@@ -2731,19 +2730,19 @@
                     source: 'detail',
                 };
             };
-            // 鏉ヨ嚜鎼滅储椤?
+            // 来自搜索页
             const fromSearchPage = async () => {
                 const jobInfo = await getJobInfo();
-                // 鎶婅亴浣嶄俊鎭彂閫佺粰鎼滅储椤?
+                // 把职位信息发送给搜索页
                 await api.event('job_detail_received', `详情页读取职位: ${jobInfo.title}`, 'script', 'info', jobInfo);
                 await this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, jobInfo);
                 setTimeout(() => window.close(), 500);
             };
 
-            // 鏉ヨ嚜鑱婂ぉ椤?
+            // 来自聊天页
             const fromChatPage = async () => {
                 const jobInfo = await getJobInfo();
-                // 鎶婅亴浣嶄俊鎭彂閫佺粰鑱婂ぉ椤?
+                // 把职位信息发送给聊天页
                 await api.event('job_detail_received', `聊天页读取职位: ${jobInfo.title}`, 'script', 'info', jobInfo);
                 await this.broadcast.send(
                     this.targets.chat,
@@ -2753,10 +2752,10 @@
                 window.close();
             };
 
-            // 涓诲嚱鏁?
+            // 主函数
             const main = async () => {
                 try {
-                    // 鍒ゆ柇鏉ユ簮
+                    // 判断来源
                     const now = new Date().getTime();
                     const detailOpenedAt = tools.getTimestamp(this.targets.detail);
                     const chatOpenedAt = tools.getTimestamp(this.targets.chat);
@@ -2827,10 +2826,10 @@
             main();
         }
 
-        // 鑱婂ぉ椤?
+        // 聊天页
         async __chat() {
             const pageApi = new Api();
-            // 娉ㄥ唽骞挎挱
+            // 注册广播
             const startBroadcast = (target = this.targets.chat) => {
                 this.__broadcast(target);
             };
@@ -2937,7 +2936,7 @@
                 })
             };
 
-            // 鎵撴嫑鍛?
+            // 打招呼
             const closeTemporaryChatPage = async (requestId) => {
                 tools.releaseGreetClaim(requestId);
                 setTimeout(() => {
@@ -2965,7 +2964,7 @@
                 };
                 startBroadcast(this.targets.chatGreet);
 
-                // 蹇冭烦
+                // 心跳
                 let count = 0;
                 let heartbeatActive = true;
                 const loop = () => {

@@ -153,8 +153,11 @@ if (Test-Path -LiteralPath $venvPython) {
 }
 
 Write-Info "Checking Python dependencies..."
-& $pythonExe -c "import fastapi, uvicorn, pydantic, ollama, pypdf, multipart" 2>$null
+$dependencyOutput = & $pythonExe -c "import fastapi, uvicorn, pydantic, ollama, pypdf, multipart" 2>&1
 if ($LASTEXITCODE -ne 0) {
+    if ($dependencyOutput) {
+        $dependencyOutput | ForEach-Object { Write-Fail "$_" }
+    }
     Write-Fail "Python dependencies are incomplete. Run: pip install -r requirements.txt"
     Pause-And-Exit 1
 }

@@ -48,6 +48,12 @@ class RuntimeState:
             "latency_seconds": None,
             "error": "",
         }
+        self.autorun = {
+            "blocked": False,
+            "reason": "",
+            "next_action": "",
+            "updated_at": "",
+        }
         self.logs: deque[dict[str, Any]] = deque(maxlen=300)
         self.events: deque[dict[str, Any]] = deque(maxlen=500)
         self._subscribers: list[Queue] = []
@@ -153,12 +159,29 @@ class RuntimeState:
         elif command == "resume":
             if new_run or self.control == "stopped" or not self.run_id:
                 self.run_id = self._new_run_id()
+            self.clear_autorun_blocked()
             self.control = "running"
             self.current_task = "idle"
         elif command == "stop":
             self.control = "stopped"
             self.current_task = "stopped"
         self.log(f"控制命令: {command}", source="control")
+
+    def set_autorun_blocked(self, reason: str, next_action: str = "") -> None:
+        self.autorun = {
+            "blocked": True,
+            "reason": reason,
+            "next_action": next_action,
+            "updated_at": now_iso(),
+        }
+
+    def clear_autorun_blocked(self) -> None:
+        self.autorun = {
+            "blocked": False,
+            "reason": "",
+            "next_action": "",
+            "updated_at": now_iso(),
+        }
 
     def control_payload(self) -> dict[str, Any]:
         should_start = self.control == "running"
@@ -279,11 +302,11 @@ class RuntimeState:
                 "scoring_thinking": not model_thinking_disabled,
                 "non_scoring_thinking": not model_thinking_disabled,
                 "profile_tags_thinking": not model_thinking_disabled,
-                "greeting_thinking": True,
+                "greeting_thinking": not model_thinking_disabled,
                 "thinking_policy": {
                     "scoring": not model_thinking_disabled,
                     "profile_tags": not model_thinking_disabled,
-                    "greeting": True,
+                    "greeting": not model_thinking_disabled,
                 },
                 "external_model_profile": Config.external_model_profile if Config.model_provider == "openai" else "",
                 "parameters": {
@@ -299,6 +322,7 @@ class RuntimeState:
             "resume": resume_status,
             "cache": cache_status,
             "script": self.script_snapshot(),
+            "autorun": dict(self.autorun),
         }
         return status
 

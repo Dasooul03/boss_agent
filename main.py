@@ -156,7 +156,14 @@ async def web_script_user_js():
 @app.get("/status", summary="系统状态")
 async def status():
     cache.load()
-    return runtime_state.as_dict(cache.status(), cache.cache_status())
+    result = runtime_state.as_dict(cache.status(), cache.cache_status())
+    greeting = greeting_service.get_greeting()
+    result["greeting"] = {
+        "confirmed": bool(greeting.get("confirmed")),
+        "active_name": (greeting.get("active") or {}).get("name") if isinstance(greeting.get("active"), dict) else "",
+        "variant_count": len(greeting.get("variants") or []),
+    }
+    return result
 
 
 @app.get("/config", summary="读取配置")
@@ -295,7 +302,7 @@ async def script_heartbeat(payload: ScriptHeartbeat):
 
 @app.post("/control", summary="暂停/继续/停止")
 async def control(payload: ControlUpdate):
-    runtime_state.set_control(payload.command)
+    runtime_state.set_control(payload.command, new_run=payload.new_run)
     return runtime_state.control_payload()
 
 

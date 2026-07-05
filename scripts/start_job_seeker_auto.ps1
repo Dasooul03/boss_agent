@@ -13,6 +13,7 @@ try {
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $BossUrl = "https://www.zhipin.com/web/geek/job"
 $OpenCooldownSeconds = 60
+$DefaultOllamaModel = "qwen3:1.7b"
 
 function Write-Info {
     param([string]$Message)
@@ -90,6 +91,134 @@ function Test-OllamaAvailable {
     }
 }
 
+function Wait-OllamaAvailable {
+    param(
+        [string]$HostUrl,
+        [int]$TimeoutSeconds = 20
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-OllamaAvailable $HostUrl) {
+            return $true
+        }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
+function Get-OllamaModels {
+    param([string]$HostUrl)
+    $ollamaTagsUrl = $HostUrl.TrimEnd("/") + "/api/tags"
+    try {
+        $payload = Invoke-RestMethod -Uri $ollamaTagsUrl -Method Get -TimeoutSec 5
+        $models = @()
+        foreach ($item in @($payload.models)) {
+            if ($item.name) {
+                $models += [string]$item.name
+            } elseif ($item.model) {
+                $models += [string]$item.model
+            }
+        }
+        return $models
+    } catch {
+        return @()
+    }
+}
+
+function Find-OllamaCommand {
+    $command = Get-Command ollama -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"),
+        (Join-Path $env:ProgramFiles "Ollama\ollama.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+    return ""
+}
+
+function Ensure-OllamaCommand {
+    $commandPath = Find-OllamaCommand
+    if ($commandPath) {
+        return $commandPath
+    }
+    Write-Warn "Ollama was not found. It is required for the default local model."
+    Write-Warn "Official Windows installer command: irm https://ollama.com/install.ps1 | iex"
+    $answer = Read-Host "Install Ollama now? [y/N]"
+    if ($answer -notin @("y", "Y", "yes", "YES", "Yes")) {
+        return ""
+    }
+    try {
+        Invoke-Expression (Invoke-RestMethod -Uri "https://ollama.com/install.ps1")
+    } catch {
+        Write-Fail "Ollama install failed: $($_.Exception.Message)"
+        return ""
+    }
+    $commandPath = Find-OllamaCommand
+    if (-not $commandPath) {
+        Write-Fail "Ollama installation finished, but the ollama command was not found in PATH or common install paths. Reopen this launcher after installation."
+        return ""
+    }
+    return $commandPath
+}
+
+function Ensure-OllamaRunning {
+    param(
+        [string]$OllamaExe,
+        [string]$HostUrl
+    )
+    if (Test-OllamaAvailable $HostUrl) {
+        return $true
+    }
+    if (-not $OllamaExe) {
+        return $false
+    }
+    Write-Warn "Ollama is not reachable. Trying to start Ollama..."
+    try {
+        Start-Process -FilePath $OllamaExe -ArgumentList "serve" -WindowStyle Hidden | Out-Null
+    } catch {
+        Write-Warn "Starting 'ollama serve' failed: $($_.Exception.Message)"
+        try {
+            Start-Process -FilePath $OllamaExe -WindowStyle Hidden | Out-Null
+        } catch {
+            Write-Warn "Starting Ollama app failed: $($_.Exception.Message)"
+        }
+    }
+    return (Wait-OllamaAvailable $HostUrl 25)
+}
+
+function Ensure-OllamaModel {
+    param(
+        [string]$OllamaExe,
+        [string]$HostUrl,
+        [string]$ModelName
+    )
+    if (-not (Test-OllamaAvailable $HostUrl)) {
+        return $false
+    }
+    $models = @(Get-OllamaModels $HostUrl)
+    if ($models -contains $ModelName) {
+        Write-Info "Ollama model is available: $ModelName"
+        return $true
+    }
+    if (-not $OllamaExe) {
+        Write-Warn "Cannot pull model because ollama command is missing: $ModelName"
+        return $false
+    }
+    Write-Info "Pulling default Ollama model: $ModelName"
+    & $OllamaExe pull $ModelName
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Model pull failed: $ModelName"
+        return $false
+    }
+    return $true
+}
+
 function Test-OpenCooldown {
     param([string]$Name)
     $cacheDir = Join-Path $ProjectRoot "data\cache"
@@ -131,6 +260,47 @@ function Open-StartupPages {
     }
 }
 
+function Resume-ExistingJobSeeker {
+    param([int]$Port)
+    try {
+        $body = @{ command = "resume"; new_run = $true } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/control" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 5 | Out-Null
+        Write-Info "Existing Job Seeker service resumed with a new run."
+        return $true
+    } catch {
+        Write-Warn "Failed to resume existing Job Seeker service: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-ExistingJobSeekerStatus {
+    param([int]$Port)
+    try {
+        return Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/status" -Method Get -TimeoutSec 5
+    } catch {
+        Write-Warn "Failed to read existing Job Seeker status: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Test-ExistingJobSeekerReady {
+    param([object]$Status)
+    if ($null -eq $Status) {
+        return $false
+    }
+    $resumeReady = [bool]$Status.resume.saved
+    $profileReady = [bool]$Status.cache.profile_generated
+    $greetingReady = [bool]$Status.greeting.confirmed
+    $provider = [string]$Status.models.provider
+    $modelReady = $false
+    if ($provider -eq "openai") {
+        $modelReady = [bool]$Status.models.openai_api_key_configured
+    } else {
+        $modelReady = [bool]$Status.ollama.available -and [bool]$Status.ollama.model_available
+    }
+    return ($resumeReady -and $profileReady -and $greetingReady -and $modelReady)
+}
+
 Set-Location $ProjectRoot
 Write-Info "Project root: $ProjectRoot"
 
@@ -150,15 +320,46 @@ if (Test-Path -LiteralPath $venvPython) {
         Write-Fail "Python was not found. Install Python 3.10+ and then run: python -m venv .venv"
         Pause-And-Exit 1
     }
-    $pythonExe = $pythonCommand.Source
-    Write-Warn ".venv was not found. Using system Python: $pythonExe"
+    Write-Warn ".venv was not found. Creating project virtualenv..."
+    & $pythonCommand.Source -m venv (Join-Path $ProjectRoot ".venv")
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $venvPython)) {
+        Write-Fail "Failed to create .venv. Try manually: python -m venv .venv"
+        Pause-And-Exit 1
+    }
+    $pythonExe = $venvPython
+    Write-Info "Using virtualenv Python: $pythonExe"
 }
 
 Write-Info "Checking Python dependencies..."
-& $pythonExe -c "import fastapi, uvicorn, pydantic, ollama, pypdf, multipart" 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Python dependencies are incomplete. Run: pip install -r requirements.txt"
+$dependencyCheckPath = Join-Path $ProjectRoot "scripts\check_deps.py"
+if (-not (Test-Path -LiteralPath $dependencyCheckPath)) {
+    Write-Fail "Dependency check script was not found: $dependencyCheckPath"
     Pause-And-Exit 1
+}
+$dependencyOutput = & $pythonExe $dependencyCheckPath 2>&1
+if ($LASTEXITCODE -ne 0) {
+    if ($dependencyOutput) {
+        $dependencyOutput | ForEach-Object { Write-Warn "$_" }
+    }
+    Write-Warn "Python dependencies are incomplete. Installing from requirements.txt..."
+    Write-Info "Upgrading pip inside .venv..."
+    & $pythonExe -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "pip upgrade failed. Continuing with requirements install."
+    }
+    & $pythonExe -m pip install -r $requirementsPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Dependency installation failed. Manual command: $pythonExe -m pip install -r requirements.txt"
+        Pause-And-Exit 1
+    }
+    $dependencyOutput = & $pythonExe $dependencyCheckPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        if ($dependencyOutput) {
+            $dependencyOutput | ForEach-Object { Write-Fail "$_" }
+        }
+        Write-Fail "Dependencies are still incomplete after install."
+        Pause-And-Exit 1
+    }
 }
 
 $configPath = Join-Path $ProjectRoot "data\config.json"
@@ -178,9 +379,16 @@ $openaiKey = [string](Get-ConfigValue $config "openai_api_key" "")
 
 if (Test-TcpPort $port) {
     if (Test-JobSeekerHealth $port) {
-        Write-Warn "Job Seeker is already running on port $port. This auto launcher will not start another backend."
+        Write-Warn "Job Seeker is already running on port $port. Attaching to the existing backend."
+        $existingStatus = Get-ExistingJobSeekerStatus $port
+        if (Test-ExistingJobSeekerReady $existingStatus) {
+            Resume-ExistingJobSeeker $port | Out-Null
+        } else {
+            Write-Warn "Existing backend is alive, but saved configuration is not fully ready. It will not be resumed automatically."
+            Write-Warn "Open http://127.0.0.1:${port}/status or use start_job_seeker.bat to finish configuration."
+        }
         Open-StartupPages $port
-        Write-Warn "If the existing window is paused, use that window or restart it with this auto launcher."
+        Write-Info "Existing backend is attached. You can monitor: http://127.0.0.1:${port}/status"
         Pause-And-Exit 0
     }
     Write-Fail "Port $port is occupied by another program. Close it or change server_port in data/config.json."
@@ -188,17 +396,17 @@ if (Test-TcpPort $port) {
 }
 
 if ($provider -eq "ollama") {
-    if (Test-OllamaAvailable $ollamaHost) {
+    $ollamaExe = Ensure-OllamaCommand
+    if ($ollamaExe -and (Ensure-OllamaRunning $ollamaExe $ollamaHost)) {
         Write-Info "Ollama is reachable: $ollamaHost"
+        Ensure-OllamaModel $ollamaExe $ollamaHost $DefaultOllamaModel | Out-Null
     } else {
-        Write-Fail "Ollama is not reachable: $ollamaHost. Start Ollama or run the manual launcher to configure the model."
-        Pause-And-Exit 1
+        Write-Warn "Ollama is not ready. Job Seeker will still start and remain paused/blocked until the model is available."
     }
 }
 
 if ($provider -eq "openai" -and -not $openaiKey) {
-    Write-Fail "Provider is OpenAI, but API Key is missing. Run the manual launcher and configure it first."
-    Pause-And-Exit 1
+    Write-Warn "Provider is OpenAI, but API Key is missing. Job Seeker will start and remain paused/blocked."
 }
 
 Write-Info "Starting Job Seeker auto-run..."

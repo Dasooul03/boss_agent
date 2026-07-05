@@ -101,11 +101,11 @@ def generate_greeting(style: str = "default") -> dict[str, Any]:
         "temperature": 0.4,
         "num_ctx": 10240,
         "num_predict": -1,  # 不限制令牌数，让模型自由输出
-        "think": True,  # 打招呼需要深度推理，强制开启思考
+        "think": not bool(Config.disable_model_thinking),
     }
 
     try:
-        # ── 第 1 次：默认参数 + 强制思考 ──
+        # 第 1 次：遵循当前全局思考策略。
         content = _generate_greeting_raw(style, prompt, base_options, 1)
         if content:
             runtime_state.log(f"已生成打招呼草稿: {style}")
@@ -116,7 +116,7 @@ def generate_greeting(style: str = "default") -> dict[str, Any]:
                 "confirmed": False,
             }
 
-        # ── 第 2 次：调高温度 ──
+        # 第 2 次：仍遵循当前思考策略，只调高温度。
         runtime_state.log(f"打招呼第1次无输出，第2次重试（调高温度）…", source="model")
         options_2 = dict(base_options, temperature=0.6)
         content = _generate_greeting_raw(style, prompt, options_2, 2)
@@ -129,9 +129,13 @@ def generate_greeting(style: str = "default") -> dict[str, Any]:
                 "confirmed": False,
             }
 
-        # ── 第 3 次：调高温度 + 调高 top_p ──
-        runtime_state.log(f"打招呼第2次仍无输出，第3次重试（调高温度+top_p）…", source="model")
-        options_3 = dict(base_options, temperature=0.7, top_p=0.9)
+        # 第 3 次：如果全局关闭思考，最后一次开启思考兜底。
+        if Config.disable_model_thinking:
+            runtime_state.log("打招呼第2次仍无输出，第3次重试（开启思考兜底）…", source="model")
+            options_3 = dict(base_options, temperature=0.6, top_p=0.9, think=True)
+        else:
+            runtime_state.log("打招呼第2次仍无输出，第3次重试（调高温度+top_p）…", source="model")
+            options_3 = dict(base_options, temperature=0.7, top_p=0.9)
         content = _generate_greeting_raw(style, prompt, options_3, 3)
         runtime_state.log(f"已生成打招呼草稿: {style}")
         return {

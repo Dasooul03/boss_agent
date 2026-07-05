@@ -77,6 +77,7 @@ class ActionDecision(BaseModel):
 
 class ControlUpdate(BaseModel):
     command: str = Field(pattern="^(pause|resume|stop)$")
+    new_run: bool = False
 
 
 class EventCreate(BaseModel):

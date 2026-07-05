@@ -6,6 +6,7 @@ import threading
 import importlib.util
 import json
 import re
+import shutil
 import time
 import webbrowser
 from getpass import getpass
@@ -46,6 +47,7 @@ WEB_SCRIPT_PATH = Path(__file__).resolve().parent / "web_script.js"
 BOSS_SEARCH_URL = "https://www.zhipin.com/web/geek/job"
 SESSION_PREPARED = False
 BROWSER_OPEN_COOLDOWN_SECONDS = 60
+DEFAULT_AUTORUN_OLLAMA_MODEL = "qwen3:1.7b"
 
 DETAIL_EVENT_TYPES = {
     "message_send_failed",
@@ -248,7 +250,7 @@ def _ask_thinking(current: dict[str, Any]) -> bool:
     print("       关思考时评分令牌 {} / 开思考时 {}，系统支持3次自动重试。".format(
         current.get("job_score_num_predict_think_off", Config.job_score_num_predict_think_off),
         current.get("job_score_num_predict_think_on", Config.job_score_num_predict_think_on)))
-    print("       打招呼等深度任务始终开启思考且不限制令牌。标签/画像遵循此全局设置。")
+    print("       标签/画像/打招呼默认遵循此全局设置；打招呼为空输出时会尝试一次开启思考兜底。")
     return ask_bool("是否关闭模型思考", bool(current.get("disable_model_thinking", True)))
 
 
@@ -568,6 +570,7 @@ def print_status_panel() -> None:
     control = runtime_state.control
 
     scoring_think = "开启" if not Config.disable_model_thinking else "关闭"
+    greeting_think = "开启" if not Config.disable_model_thinking else "关闭"
     model_label = f"{Config.think_model} ({Config.model_provider})"
 
     def _icon(ok: bool) -> str:
@@ -582,7 +585,7 @@ def print_status_panel() -> None:
 ╠══════════════════════════════════════════════════════════════╣
 ║  模型        {model_label:<48}║
 ║  模型状态    {model_status:<48}║
-║  思考模式    评分: {scoring_think:<6} │ 画像/标签: {scoring_think:<6} │ 打招呼: 强制开启{' ' * 8}║
+║  思考模式    评分: {scoring_think:<6} │ 画像/标签: {scoring_think:<6} │ 打招呼: {greeting_think:<6}{' ' * 8}║
 ║  评分阈值    {Config.score_threshold}分 / 本次上限 {Config.session_greet_limit}{' ' * 30}║
 ║  评分令牌    关思考 {Config.job_score_num_predict_think_off} / 开思考 {Config.job_score_num_predict_think_on}{' ' * 18}║
 ║  温度/top_p  {Config.model_temperature} / {Config.model_top_p}{' ' * 38}║
@@ -600,7 +603,7 @@ def print_status_panel() -> None:
         panel = f"""
 ┌──────────────────────────────────────────────────────────────┐
 │  Job Seeker  v2026.07                                        │
-│  {model_label} │ 评分思考: {scoring_think} │ 画像/标签: {scoring_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
+│  {model_label} │ 评分思考: {scoring_think} │ 画像/标签: {scoring_think} │ 打招呼: {greeting_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
 │  模型: {model_status[:50]} │ 评分令牌: {Config.job_score_num_predict_think_off}/{Config.job_score_num_predict_think_on} │
 │  简历: {_icon(resume_ok)} 画像: {_icon(profile_ok)} 话术: {_icon(greeting_ok)} │ 脚本: {_icon(script_ok)} │ {control} │
 └──────────────────────────────────────────────────────────────┘"""
@@ -690,8 +693,8 @@ def show_autorun_next_steps() -> None:
     print("  3. 等待油猴脚本心跳，脚本在线后自动开始运行")
 
 
-def maybe_open_startup_pages() -> None:
-    """每次启动自动打开 BOSS 搜索页；脚本安装页仅首次运行时打开。"""
+def maybe_open_startup_pages(*, always_open_userscript: bool = False) -> None:
+    """每次启动自动打开 BOSS 搜索页；脚本安装页按模式和冷却策略打开。"""
     if not wait_for_api_ready():
         print("[启动] 本地 API 未在限定时间内就绪，已跳过自动打开。")
         return
@@ -704,11 +707,13 @@ def maybe_open_startup_pages() -> None:
             print(f"[启动] 打开 BOSS 搜索页失败: {exc}")
     else:
         print("[启动] 60 秒内已打开过 BOSS 搜索页，本次跳过自动打开。")
-    # 脚本安装页仅首次运行
-    if CONFIG_WAS_MISSING and should_open_browser_page("userscript"):
+    if (always_open_userscript or CONFIG_WAS_MISSING) and should_open_browser_page("userscript"):
         try:
             webbrowser.open(script_install_url(), new=2)
-            print("[启动] 首次运行，已打开脚本安装页（后续输入 script 命令可重新打开）。")
+            if always_open_userscript:
+                print("[启动] 已打开脚本安装/更新页。")
+            else:
+                print("[启动] 首次运行，已打开脚本安装页（后续输入 script 命令可重新打开）。")
         except Exception as exc:
             print(f"[启动] 打开脚本安装页失败: {exc}")
 
@@ -909,16 +914,63 @@ def show_doctor() -> None:
     print(f"- 打招呼话术: {'已确认' if greeting.get('confirmed') else '未确认'}")
 
 
+def block_autorun(message: str, *, detail: dict[str, Any] | None = None, next_action: str = "") -> bool:
+    runtime_state.set_control("pause")
+    runtime_state.set_task("blocked")
+    runtime_state.set_autorun_blocked(message, next_action)
+    runtime_state.emit("autorun_blocked", message, source="startup", level="error", detail=detail or {})
+    return False
+
+
+def ensure_autorun_ollama_model() -> bool:
+    status = runtime_state.ollama_status()
+    if status.get("available") and status.get("model_available", True):
+        return True
+    if not status.get("available"):
+        print(f"[模型] Ollama 服务不可用: {status.get('error') or '未知错误'}")
+        return False
+    models = set(status.get("models") or [])
+    if Config.think_model != DEFAULT_AUTORUN_OLLAMA_MODEL or DEFAULT_AUTORUN_OLLAMA_MODEL not in models:
+        print(f"[模型] 当前模型不可用: {Config.think_model}")
+        print(f"[模型] 自动准备默认模型: {DEFAULT_AUTORUN_OLLAMA_MODEL}")
+    if DEFAULT_AUTORUN_OLLAMA_MODEL not in models:
+        ollama_exe = shutil.which("ollama")
+        if not ollama_exe:
+            print("[模型] 未找到 ollama 命令，无法自动下载模型。")
+            return False
+        result = subprocess.run([ollama_exe, "pull", DEFAULT_AUTORUN_OLLAMA_MODEL])
+        if result.returncode != 0:
+            print(f"[模型] 下载默认模型失败，退出码: {result.returncode}")
+            return False
+    Config.save(
+        {
+            "model_provider": "ollama",
+            "think_model": DEFAULT_AUTORUN_OLLAMA_MODEL,
+            "disable_model_thinking": True,
+        }
+    )
+    runtime_state.emit(
+        "autorun_model_ready",
+        f"自动运行模型已设置为 {DEFAULT_AUTORUN_OLLAMA_MODEL}",
+        source="startup",
+        detail={"model": DEFAULT_AUTORUN_OLLAMA_MODEL},
+    )
+    status = runtime_state.ollama_status()
+    if not status.get("available") or not status.get("model_available", True):
+        print(f"[模型] 默认模型仍不可用: {status.get('error') or DEFAULT_AUTORUN_OLLAMA_MODEL}")
+        return False
+    return True
+
+
 def model_ready_for_autorun() -> bool:
     status = runtime_state.ollama_status()
     if Config.model_provider == "openai" and not Config.openai_api_key:
         print("[模型] OpenAI API Key 未配置，请先运行人工启动器 config。")
         return False
+    if Config.model_provider == "ollama":
+        return ensure_autorun_ollama_model()
     if not status.get("available"):
         print(f"[模型] 模型服务不可用: {status.get('error') or '未知错误'}")
-        return False
-    if Config.model_provider == "ollama" and not status.get("model_available", True):
-        print(f"[模型] 当前模型不在 Ollama 模型列表中: {Config.think_model}")
         return False
     return True
 
@@ -927,11 +979,13 @@ def auto_prepare_saved_configuration() -> bool:
     cache.load()
     if not cache.resume.strip():
         print("[配置] 未找到已保存简历。请先运行 start_job_seeker.bat 完成人工配置。")
-        runtime_state.emit("autorun_blocked", "未找到已保存简历，自动运行已暂停", source="startup", level="error")
-        return False
+        return block_autorun("未找到已保存简历，自动运行已暂停", next_action="运行 start_job_seeker.bat 配置简历")
     if not model_ready_for_autorun():
-        runtime_state.emit("autorun_blocked", "模型配置不可用，自动运行已暂停", source="startup", level="error")
-        return False
+        return block_autorun(
+            "模型配置不可用，自动运行已暂停",
+            detail={"provider": Config.model_provider, "model": Config.think_model},
+            next_action="检查 Ollama/OpenAI 配置后重启自动模式",
+        )
 
     status = cache.cache_status()
     if not status["profile_generated"]:
@@ -942,8 +996,7 @@ def auto_prepare_saved_configuration() -> bool:
                 raise ValueError("模型未生成有效画像、标签或用户详情")
         except Exception as exc:
             print(f"[配置] 自动生成画像失败: {exc}")
-            runtime_state.emit("autorun_blocked", f"自动生成画像失败: {exc}", source="startup", level="error")
-            return False
+            return block_autorun(f"自动生成画像失败: {exc}", next_action="运行人工启动器 profile 检查画像")
 
     greeting = greeting_service.get_greeting()
     if not greeting.get("confirmed"):
@@ -953,14 +1006,12 @@ def auto_prepare_saved_configuration() -> bool:
             greeting_service.save_greeting(draft["content"], "自动运行生成话术")
         except Exception as exc:
             print(f"[配置] 自动生成打招呼话术失败: {exc}")
-            runtime_state.emit("autorun_blocked", f"自动生成打招呼话术失败: {exc}", source="startup", level="error")
-            return False
+            return block_autorun(f"自动生成打招呼话术失败: {exc}", next_action="运行人工启动器 greeting 确认话术")
 
     cache.load()
     if not cache.tags:
         print("[配置] 岗位标签为空。请先运行人工启动器 tags。")
-        runtime_state.emit("autorun_blocked", "岗位标签为空，自动运行已暂停", source="startup", level="error")
-        return False
+        return block_autorun("岗位标签为空，自动运行已暂停", next_action="运行人工启动器 tags 配置岗位标签")
     runtime_state.emit(
         "autorun_config_ready",
         f"自动运行配置就绪: 标签 {len(cache.tags)} 个 / 本次上限 {Config.session_greet_limit}",
@@ -1082,26 +1133,44 @@ def run_autorun(app, shutdown_callback: Callable[[], None] | None = None) -> int
     cache.load()
     start_event_printer()
     runtime_state.emit("autorun_start", "Job Seeker 自动运行启动", source="startup")
-    if not auto_prepare_saved_configuration():
-        runtime_state.set_control("pause")
-        print("[启动] 自动运行未开始。请使用人工启动器处理上述问题。")
-        return 1
-    start_api_server(app)
+    server = start_api_server(app)
+
+    def shutdown_autorun() -> None:
+        server.should_exit = True
+        if shutdown_callback:
+            shutdown_callback()
+
     wait_for_api_ready()
+    maybe_open_startup_pages(always_open_userscript=True)
+    show_autorun_next_steps()
+    if not auto_prepare_saved_configuration():
+        print("[启动] 自动运行未开始，但本地服务会保持运行，方便查看 /status 和 /logs。")
+        try:
+            keep_process_alive()
+        finally:
+            shutdown_autorun()
+        return 1
     _ensure_model_warmup()
     print_status_panel()
-    maybe_open_startup_pages()
-    show_autorun_next_steps()
     print("[脚本] 等待油猴脚本连接，最长等待 120 秒...")
     if not wait_for_script_ready(120):
-        runtime_state.set_control("pause")
+        block_autorun("油猴脚本未连接，自动运行已暂停", next_action="安装/更新油猴脚本，登录 BOSS 并刷新搜索页")
         print("[脚本] 油猴脚本未连接。请确认已安装/启用脚本、BOSS 已登录，并刷新搜索页。")
+        if should_open_browser_page("userscript"):
+            try:
+                webbrowser.open(script_install_url(), new=2)
+                print("[脚本] 已再次打开油猴脚本安装/更新页。")
+            except Exception as exc:
+                print(f"[脚本] 打开油猴脚本安装/更新页失败: {exc}")
+        try:
+            keep_process_alive()
+        finally:
+            shutdown_autorun()
         return 2
     runtime_state.set_control("resume", new_run=True)
     print("[控制] 脚本已连接，自动化已开始运行。")
     try:
         keep_process_alive()
     finally:
-        if shutdown_callback:
-            shutdown_callback()
+        shutdown_autorun()
     return 0

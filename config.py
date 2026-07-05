@@ -28,7 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ollama_host": "http://127.0.0.1:11434",
     "openai_api_base": "https://api.openai.com/v1",
     "openai_api_key": "",
-    "think_model": "qwen3:4b",
+    "think_model": "qwen3:1.7b",
     "score_threshold": 70,
     "session_greet_limit": 50,
     "max_contacts_per_company": 1,

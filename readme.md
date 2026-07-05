@@ -38,7 +38,7 @@ python -m pip install -r requirements.txt
 如果使用 Ollama：
 
 ```powershell
-ollama pull qwen3:4b
+ollama pull qwen3:1.7b
 ollama serve
 ```
 
@@ -130,6 +130,8 @@ python main.py autorun
 
 为了避免连续双击启动器或 agent 重复启动时打开一堆页面，启动器会记录最近一次自动打开浏览器的时间。60 秒内重复启动时，会跳过重复打开油猴脚本页或 BOSS 搜索页。浏览器打开冷却记录统一保存在 `data/cache/browser_open_*.stamp`。
 
+自动模式会尽量自修复启动环境：缺 `.venv` 会自动创建，缺 Python 依赖会自动安装，Ollama 缺少默认模型时会自动拉取 `qwen3:1.7b`。如果本机没有安装 Ollama，启动器会先询问是否安装，不会静默修改系统软件。
+
 ## Agent 使用建议
 
 Agent 不需要调用 MCP 或业务 API。推荐流程很简单：
@@ -144,7 +146,7 @@ Agent 不需要调用 MCP 或业务 API。推荐流程很简单：
 
 - `scoring_thinking`：岗位评分是否允许思考。
 - `profile_tags_thinking`：简历画像和岗位标签生成是否允许思考。
-- `greeting_thinking`：打招呼话术始终允许思考。
+- `greeting_thinking`：打招呼话术默认是否允许思考，跟随 `disable_model_thinking`；如果生成为空，最后一次重试会开启思考兜底。
 - `non_scoring_thinking`：兼容旧字段，表示画像/标签类非评分任务是否允许思考。
 
 Agent 不应该直接写入 API Key、简历正文、画像正文、打招呼话术或动作审批结果。需要改这些内容时，让用户进入人工模式处理。
@@ -193,14 +195,14 @@ data/config.json
 | `ollama_host` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `openai_api_base` | `https://api.openai.com/v1` | OpenAI 兼容接口地址 |
 | `openai_api_key` | 空 | OpenAI 兼容接口密钥 |
-| `think_model` | `qwen3:4b` | 模型名称 |
+| `think_model` | `qwen3:1.7b` | 模型名称；`qwen3:4b` 可作为可选更大模型 |
 | `score_threshold` | `70` | 达到多少分才打招呼 |
 | `session_greet_limit` | `50` | 单轮最多打招呼数量 |
 | `max_contacts_per_company` | `1` | 同一公司最多联系次数 |
 | `skip_contacted_companies` | `true` | 跳过已联系公司 |
 | `job_detail_max_chars` | `1600` | 传给模型的岗位描述最大字符数 |
 | `log_verbosity` | `compact` | 日志详细度：`compact`、`normal`、`debug` |
-| `disable_model_thinking` | `true` | 岗位评分时是否关闭模型思考 |
+| `disable_model_thinking` | `true` | 是否默认关闭模型思考；评分、画像/标签、打招呼都遵循此设置，打招呼空输出时会开启一次思考兜底 |
 | `show_model_reasoning` | `false` | 是否在日志中展示模型思考内容 |
 | `external_model_profile` | `generic` | OpenAI 模型适配类型：`generic`、`qwen`、`deepseek`、`doubao` |
 | `job_score_num_predict_think_off` | `-1` | 评分关闭思考时的生成长度，`-1` 表示不限制 |
