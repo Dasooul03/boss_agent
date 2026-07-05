@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import sys
 import asyncio
+import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+    from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import PlainTextResponse
+    from fastapi.responses import JSONResponse, PlainTextResponse
 except ModuleNotFoundError as exc:
     print("[错误] 缺少 Python 依赖，请先运行: pip install -r requirements.txt", file=sys.stderr)
     raise SystemExit(1) from exc
@@ -41,8 +45,20 @@ from tools import script_connect_hosts
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_SCRIPT_PATH = BASE_DIR / "web_script.js"
-MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jobseeker-model")
+MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="jobseeker-model")
 MODEL_EXECUTOR_SHUTDOWN = False
+ALLOW_REMOTE_API_ENV = "JOB_SEEKER_ALLOW_REMOTE"
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+RATE_LIMIT_BUCKET_TTL_SECONDS = RATE_LIMIT_WINDOW_SECONDS * 2
+RATE_LIMIT_RULES = {
+    "/jobs/analyze": 20,
+    "/greeting/generate": 6,
+    "/greeting/variants": 2,
+}
+RATE_LIMIT_BUCKETS: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+RATE_LIMIT_LOCK = threading.Lock()
+RATE_LIMIT_LAST_CLEANUP = 0.0
 
 
 def shutdown_model_executor() -> None:
@@ -70,9 +86,87 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Job Seeker", version="2026.06-cli", lifespan=lifespan)
 
+
+def cors_origins() -> list[str]:
+    port = int(Config.server_port)
+    return [
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+    ]
+
+
+def remote_api_allowed() -> bool:
+    return os.environ.get(ALLOW_REMOTE_API_ENV, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def is_loopback_client(host: str | None) -> bool:
+    host = (host or "").strip().lower()
+    if host in LOOPBACK_HOSTS:
+        return True
+    return host.startswith("127.")
+
+
+def rate_limit_key(request: Request) -> tuple[str, str]:
+    client_host = request.client.host if request.client else "unknown"
+    return (client_host, request.url.path)
+
+
+def cleanup_rate_limit_buckets(now: float) -> None:
+    global RATE_LIMIT_LAST_CLEANUP
+    if now - RATE_LIMIT_LAST_CLEANUP < RATE_LIMIT_WINDOW_SECONDS:
+        return
+    RATE_LIMIT_LAST_CLEANUP = now
+    for key, bucket in list(RATE_LIMIT_BUCKETS.items()):
+        while bucket and now - bucket[0] > RATE_LIMIT_BUCKET_TTL_SECONDS:
+            bucket.popleft()
+        if not bucket:
+            del RATE_LIMIT_BUCKETS[key]
+
+
+def check_rate_limit(request: Request) -> None:
+    limit = RATE_LIMIT_RULES.get(request.url.path)
+    if not limit or request.method == "OPTIONS":
+        return
+    now = time.monotonic()
+    with RATE_LIMIT_LOCK:
+        cleanup_rate_limit_buckets(now)
+        bucket = RATE_LIMIT_BUCKETS[rate_limit_key(request)]
+        while bucket and now - bucket[0] > RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+        limited = len(bucket) >= limit
+        if not limited:
+            bucket.append(now)
+    if limited:
+        runtime_state.emit(
+            "rate_limited",
+            f"请求过于频繁: {request.url.path}",
+            source="api",
+            level="warning",
+            detail={"path": request.url.path, "limit_per_minute": limit},
+        )
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+
+
+@app.middleware("http")
+async def local_api_guard(request: Request, call_next):
+    if not remote_api_allowed() and not is_loopback_client(request.client.host if request.client else None):
+        runtime_state.emit(
+            "remote_api_blocked",
+            "已拒绝非本机 API 访问",
+            source="api",
+            level="warning",
+            detail={"client": request.client.host if request.client else ""},
+        )
+        return JSONResponse(status_code=403, content={"detail": "Job Seeker API 仅允许本机访问"})
+    try:
+        check_rate_limit(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -193,7 +287,7 @@ async def logs(
     source: str = "",
     event_type: str = Query("", alias="type"),
 ):
-    items = list(runtime_state.logs)
+    items = runtime_state.log_entries()
     if level:
         items = [item for item in items if item.get("level") == level]
     if source:

@@ -8,6 +8,7 @@ continue to import it, while the values now live in ``data/config.json``.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ RESUME_DIR = DATA_DIR / "resume"
 CACHE_DIR = DATA_DIR / "cache"
 CONFIG_PATH = DATA_DIR / "config.json"
 CONFIG_WAS_MISSING = not CONFIG_PATH.exists()
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -101,6 +103,10 @@ def _detect_external_model_profile(data: dict[str, Any]) -> str:
     if "deepseek" in text:
         return "deepseek"
     return "generic"
+
+
+def _env_openai_api_key() -> str:
+    return os.environ.get(OPENAI_API_KEY_ENV, "").strip()
 
 
 class Config:
@@ -200,6 +206,9 @@ class Config:
             500,
             8000,
         )
+        env_key = _env_openai_api_key()
+        if env_key:
+            data["openai_api_key"] = env_key
         for key in DEFAULT_CONFIG:
             setattr(cls, key, data.get(key, DEFAULT_CONFIG[key]))
 
@@ -216,6 +225,7 @@ class Config:
         else:
             data["openai_api_key"] = ""
         data["openai_api_key_configured"] = bool(key)
+        data["openai_api_key_source"] = "env" if _env_openai_api_key() else ("config" if key else "")
         return data
 
     @classmethod
@@ -228,6 +238,8 @@ class Config:
         current.update({k: v for k, v in updates.items() if k in DEFAULT_CONFIG})
         cls.apply(current)
         current = cls.as_dict()
+        if _env_openai_api_key():
+            current["openai_api_key"] = ""
         CONFIG_PATH.write_text(
             json.dumps(current, ensure_ascii=False, indent=2),
             encoding="utf-8",

@@ -23,6 +23,8 @@ Job Seeker 是一个本机运行的 BOSS 直聘辅助工具。它由本地 Pytho
 
 安全边界保持不变：系统不会绕过登录、验证码、Tampermonkey 安装确认或平台风控。遇到这些情况会暂停并提示人工处理。
 
+安全提示：如果曾经把 OpenAI/火山引擎/豆包 API Key 写入 `data/config.json`，请立即去服务商控制台轮换该 Key。当前版本推荐使用 `OPENAI_API_KEY` 环境变量，程序不会把环境变量中的 Key 回写到配置文件。
+
 ## 快速开始
 
 ### 1. 安装环境
@@ -132,6 +134,8 @@ python main.py autorun
 
 自动模式会尽量自修复启动环境：缺 `.venv` 会自动创建，缺 Python 依赖会自动安装，Ollama 缺少默认模型时会自动拉取 `qwen3:1.7b`。如果本机没有安装 Ollama，启动器会先询问是否安装，不会静默修改系统软件。
 
+自动拉取 Ollama 默认模型时设置了超时保护；如果网络较慢导致超时，窗口会提示手动执行 `ollama pull qwen3:1.7b`，服务不会无限卡在下载步骤。
+
 ## Agent 使用建议
 
 Agent 不需要调用 MCP 或业务 API。推荐流程很简单：
@@ -152,6 +156,8 @@ Agent 不需要调用 MCP 或业务 API。推荐流程很简单：
 Agent 不应该直接写入 API Key、简历正文、画像正文、打招呼话术或动作审批结果。需要改这些内容时，让用户进入人工模式处理。
 
 状态面板中的模型连通性会做一次轻量预热检测：Ollama 会读取流式首个响应，OpenAI 兼容接口会发送一次极短的 `/chat/completions` 请求。预热失败只代表当前配置或网络不可用，不会绕过后续人工排查。
+
+本地 API 默认只允许 `127.0.0.1`、`localhost` 或 `::1` 访问，并对 `/jobs/analyze`、`/greeting/generate`、`/greeting/variants` 做轻量限流。不要把服务暴露到公网或局域网；如确实需要远程访问，必须显式设置 `JOB_SEEKER_ALLOW_REMOTE=true` 并自行承担网络安全风险。
 
 ## 常用 CLI 命令
 
@@ -194,7 +200,7 @@ data/config.json
 | `model_provider` | `ollama` | `ollama` 或 `openai` |
 | `ollama_host` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `openai_api_base` | `https://api.openai.com/v1` | OpenAI 兼容接口地址 |
-| `openai_api_key` | 空 | OpenAI 兼容接口密钥 |
+| `openai_api_key` | 空 | OpenAI 兼容接口密钥；推荐改用 `OPENAI_API_KEY` 环境变量 |
 | `think_model` | `qwen3:1.7b` | 模型名称；`qwen3:4b` 可作为可选更大模型 |
 | `score_threshold` | `70` | 达到多少分才打招呼 |
 | `session_greet_limit` | `50` | 单轮最多打招呼数量 |
@@ -213,6 +219,16 @@ data/config.json
 | `model_repeat_last_n` | `128` | Ollama 重复检查窗口 |
 | `model_frequency_penalty` | `0.3` | OpenAI 兼容频率惩罚 |
 | `model_presence_penalty` | `0.1` | OpenAI 兼容存在惩罚 |
+
+### API Key 配置建议
+
+推荐在当前终端或启动器环境中设置：
+
+```powershell
+$env:OPENAI_API_KEY="你的密钥"
+```
+
+`OPENAI_API_KEY` 的优先级高于 `data/config.json`。当环境变量存在时，`/status` 和 `/config` 只会显示 Key 已配置以及来源，不会返回明文；保存配置时也不会把环境变量 Key 写入 `data/config.json`。
 
 ### 评分 token 设置
 

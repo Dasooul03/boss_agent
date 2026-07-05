@@ -13,8 +13,11 @@ from tools import now_iso
 
 def connect() -> sqlite3.Connection:
     ensure_data_dirs()
-    conn = sqlite3.connect(Config.app_db_name)
+    conn = sqlite3.connect(Config.app_db_name, timeout=5)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 

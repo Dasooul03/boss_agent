@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from collections import deque
 from datetime import datetime, timezone
@@ -57,6 +58,7 @@ class RuntimeState:
         self.logs: deque[dict[str, Any]] = deque(maxlen=300)
         self.events: deque[dict[str, Any]] = deque(maxlen=500)
         self._subscribers: list[Queue] = []
+        self._lock = threading.RLock()
 
     def _new_run_id(self) -> str:
         return f"run-{uuid.uuid4().hex[:12]}"
@@ -81,15 +83,23 @@ class RuntimeState:
             "message": message,
             "detail": detail or {},
         }
-        self.logs.appendleft(item)
-        self.events.appendleft(item)
-        if level == "error":
-            self.last_error = message
-        for subscriber in list(self._subscribers):
+        with self._lock:
+            self.logs.appendleft(item)
+            self.events.appendleft(item)
+            if level == "error":
+                self.last_error = message
+            subscribers = list(self._subscribers)
+        failed_subscribers: list[Queue] = []
+        for subscriber in subscribers:
             try:
                 subscriber.put_nowait(item)
             except Exception:
-                self._subscribers.remove(subscriber)
+                failed_subscribers.append(subscriber)
+        if failed_subscribers:
+            with self._lock:
+                self._subscribers = [
+                    subscriber for subscriber in self._subscribers if subscriber not in failed_subscribers
+                ]
         try:
             import database
 
@@ -100,40 +110,46 @@ class RuntimeState:
 
     def subscribe(self) -> Queue:
         queue: Queue = Queue()
-        self._subscribers.append(queue)
+        with self._lock:
+            self._subscribers.append(queue)
         return queue
 
     def set_task(self, task: str) -> None:
-        self.current_task = task
+        with self._lock:
+            self.current_task = task
 
     def update_script(self, page: str, status: str, current_action: str = "", detail: dict[str, Any] | None = None) -> None:
-        previous = dict(self.script)
         detail = dict(detail or {})
-        detail.setdefault("backendRunId", self.run_id)
-        self.script = {
-            "connected": True,
-            "page": page,
-            "status": status,
-            "current_action": current_action,
-            "last_seen": now_iso(),
-            "stale": False,
-            "heartbeat_age_seconds": 0,
-            "detail": detail,
-        }
-        if (
-            previous.get("page") != page
-            or previous.get("status") != status
-            or previous.get("current_action") != current_action
-        ):
+        with self._lock:
+            previous = dict(self.script)
+            detail.setdefault("backendRunId", self.run_id)
+            self.script = {
+                "connected": True,
+                "page": page,
+                "status": status,
+                "current_action": current_action,
+                "last_seen": now_iso(),
+                "stale": False,
+                "heartbeat_age_seconds": 0,
+                "detail": detail,
+            }
+            changed = (
+                previous.get("page") != page
+                or previous.get("status") != status
+                or previous.get("current_action") != current_action
+            )
+            script_detail = dict(self.script)
+        if changed:
             self.emit(
                 "script_status",
                 f"脚本状态: {page} / {status} / {current_action or '空闲'}",
                 source="script",
-                detail=self.script,
+                detail=script_detail,
             )
 
     def script_snapshot(self) -> dict[str, Any]:
-        script = dict(self.script)
+        with self._lock:
+            script = dict(self.script)
         script["detail"] = dict(script.get("detail") or {})
         last_seen = script.get("last_seen")
         script["stale"] = False
@@ -153,51 +169,58 @@ class RuntimeState:
         return script
 
     def set_control(self, command: str, *, new_run: bool = False) -> None:
-        if command == "pause":
-            self.control = "paused"
-            self.current_task = "paused"
-        elif command == "resume":
-            if new_run or self.control == "stopped" or not self.run_id:
-                self.run_id = self._new_run_id()
-            self.clear_autorun_blocked()
-            self.control = "running"
-            self.current_task = "idle"
-        elif command == "stop":
-            self.control = "stopped"
-            self.current_task = "stopped"
+        with self._lock:
+            if command == "pause":
+                self.control = "paused"
+                self.current_task = "paused"
+            elif command == "resume":
+                if new_run or self.control == "stopped" or not self.run_id:
+                    self.run_id = self._new_run_id()
+                self.clear_autorun_blocked()
+                self.control = "running"
+                self.current_task = "idle"
+            elif command == "stop":
+                self.control = "stopped"
+                self.current_task = "stopped"
         self.log(f"控制命令: {command}", source="control")
 
     def set_autorun_blocked(self, reason: str, next_action: str = "") -> None:
-        self.autorun = {
-            "blocked": True,
-            "reason": reason,
-            "next_action": next_action,
-            "updated_at": now_iso(),
-        }
+        with self._lock:
+            self.autorun = {
+                "blocked": True,
+                "reason": reason,
+                "next_action": next_action,
+                "updated_at": now_iso(),
+            }
 
     def clear_autorun_blocked(self) -> None:
-        self.autorun = {
-            "blocked": False,
-            "reason": "",
-            "next_action": "",
-            "updated_at": now_iso(),
-        }
+        with self._lock:
+            self.autorun = {
+                "blocked": False,
+                "reason": "",
+                "next_action": "",
+                "updated_at": now_iso(),
+            }
 
     def control_payload(self) -> dict[str, Any]:
-        should_start = self.control == "running"
+        with self._lock:
+            control = self.control
+            run_id = self.run_id
+            current_task = self.current_task
+        should_start = control == "running"
         return {
-            "control": self.control,
-            "run_id": self.run_id,
-            "current_task": self.current_task,
+            "control": control,
+            "run_id": run_id,
+            "current_task": current_task,
             "script": self.script_snapshot(),
             "should_start": should_start,
-            "should_pause": self.control == "paused",
-            "should_stop": self.control == "stopped",
+            "should_pause": control == "paused",
+            "should_stop": control == "stopped",
             "message": {
                 "running": "CLI 已允许脚本开始或继续执行",
                 "paused": "CLI 已暂停脚本执行",
                 "stopped": "CLI 已停止脚本执行",
-            }.get(self.control, "未知控制状态"),
+            }.get(control, "未知控制状态"),
         }
 
     def update_model_warmup(
@@ -209,14 +232,19 @@ class RuntimeState:
         latency_seconds: float | None = None,
         error: str = "",
     ) -> None:
-        self.model_warmup = {
-            "status": status,
-            "provider": provider,
-            "model": model,
-            "last_checked": now_iso(),
-            "latency_seconds": latency_seconds,
-            "error": error,
-        }
+        with self._lock:
+            self.model_warmup = {
+                "status": status,
+                "provider": provider,
+                "model": model,
+                "last_checked": now_iso(),
+                "latency_seconds": latency_seconds,
+                "error": error,
+            }
+
+    def log_entries(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self.logs)
 
     def ollama_status(self) -> dict[str, Any]:
         if Config.model_provider == "openai":
@@ -255,6 +283,7 @@ class RuntimeState:
             "provider": Config.model_provider,
             "api_base": Config.openai_api_base,
             "api_key_configured": bool(str(Config.openai_api_key).strip()),
+            "api_key_source": Config.public_dict().get("openai_api_key_source", ""),
             "model": Config.think_model,
         }
         if not result["api_key_configured"]:
@@ -281,15 +310,23 @@ class RuntimeState:
 
     def as_dict(self, resume_status: dict[str, Any], cache_status: dict[str, Any]) -> dict[str, Any]:
         model_thinking_disabled = bool(Config.disable_model_thinking)
+        with self._lock:
+            started_at = self.started_at
+            run_id = self.run_id
+            current_task = self.current_task
+            control = self.control
+            last_error = self.last_error
+            model_warmup = dict(self.model_warmup)
+            autorun = dict(self.autorun)
         status = {
             "backend": {
                 "running": True,
-                "started_at": self.started_at,
-                "run_id": self.run_id,
+                "started_at": started_at,
+                "run_id": run_id,
                 "version": "2026.06-cli",
-                "current_task": self.current_task,
-                "control": self.control,
-                "last_error": self.last_error,
+                "current_task": current_task,
+                "control": control,
+                "last_error": last_error,
             },
             "ollama": self.ollama_status(),
             "models": {
@@ -297,6 +334,7 @@ class RuntimeState:
                 "model": Config.think_model,
                 "openai_api_base": Config.openai_api_base if Config.model_provider == "openai" else "",
                 "openai_api_key_configured": bool(str(Config.openai_api_key).strip()),
+                "openai_api_key_source": Config.public_dict().get("openai_api_key_source", ""),
                 "disable_model_thinking": model_thinking_disabled,
                 "show_model_reasoning": bool(Config.show_model_reasoning),
                 "scoring_thinking": not model_thinking_disabled,
@@ -317,12 +355,12 @@ class RuntimeState:
                     "frequency_penalty": Config.model_frequency_penalty,
                     "presence_penalty": Config.model_presence_penalty,
                 },
-                "warmup": dict(self.model_warmup),
+                "warmup": model_warmup,
             },
             "resume": resume_status,
             "cache": cache_status,
             "script": self.script_snapshot(),
-            "autorun": dict(self.autorun),
+            "autorun": autorun,
         }
         return status
 

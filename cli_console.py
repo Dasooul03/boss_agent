@@ -41,13 +41,14 @@ PREFIX = {
     "backend": "[系统]",
 }
 
-CLI_CONFIRM_ACTIONS: set[str] = set()
+CLI_CONFIRM_ACTIONS: set[str] = {"greet_suggestion"}
 
 WEB_SCRIPT_PATH = Path(__file__).resolve().parent / "web_script.js"
 BOSS_SEARCH_URL = "https://www.zhipin.com/web/geek/job"
 SESSION_PREPARED = False
 BROWSER_OPEN_COOLDOWN_SECONDS = 60
 DEFAULT_AUTORUN_OLLAMA_MODEL = "qwen3:1.7b"
+OLLAMA_PULL_TIMEOUT_SECONDS = 1800
 
 DETAIL_EVENT_TYPES = {
     "message_send_failed",
@@ -816,14 +817,21 @@ def handle_pending_action(action: dict[str, Any]) -> None:
 def handle_pending_actions_once() -> None:
     actions = database.list_pending_actions()
     handled = 0
+    unsupported: list[dict[str, Any]] = []
     for action in actions:
         if action["action_type"] in CLI_CONFIRM_ACTIONS:
             handle_pending_action(action)
             handled += 1
+        else:
+            unsupported.append(action)
     if not actions:
         print("[确认] 当前无待确认动作。")
     elif handled == 0:
         print(f"[确认] 有 {len(actions)} 个待处理动作，但没有当前 CLI 可确认的动作。")
+    if unsupported:
+        print("[确认] 以下 pending 动作不支持在 CLI 中确认，仅展示供排查：")
+        for action in unsupported:
+            print(f"- #{action.get('id')} {action.get('action_type')} / {action.get('company') or '-'} / {action.get('title') or '-'}")
 
 
 def show_history() -> None:
@@ -938,7 +946,15 @@ def ensure_autorun_ollama_model() -> bool:
         if not ollama_exe:
             print("[模型] 未找到 ollama 命令，无法自动下载模型。")
             return False
-        result = subprocess.run([ollama_exe, "pull", DEFAULT_AUTORUN_OLLAMA_MODEL])
+        try:
+            result = subprocess.run(
+                [ollama_exe, "pull", DEFAULT_AUTORUN_OLLAMA_MODEL],
+                timeout=OLLAMA_PULL_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[模型] 下载默认模型超时（{OLLAMA_PULL_TIMEOUT_SECONDS} 秒），请稍后重试或手动运行: ollama pull {DEFAULT_AUTORUN_OLLAMA_MODEL}")
+            return False
         if result.returncode != 0:
             print(f"[模型] 下载默认模型失败，退出码: {result.returncode}")
             return False
