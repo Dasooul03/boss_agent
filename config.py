@@ -48,6 +48,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model_presence_penalty": 0.1,
     "job_score_num_predict_think_off": -1,
     "job_score_num_predict_think_on": -1,
+    "resume_image_path": "data/resume/resume.jpg",
+    "send_mode": "text",
 }
 
 
@@ -143,6 +145,8 @@ class Config:
     model_presence_penalty = DEFAULT_CONFIG["model_presence_penalty"]
     job_score_num_predict_think_off = DEFAULT_CONFIG["job_score_num_predict_think_off"]
     job_score_num_predict_think_on = DEFAULT_CONFIG["job_score_num_predict_think_on"]
+    resume_image_path = DEFAULT_CONFIG["resume_image_path"]
+    send_mode = DEFAULT_CONFIG["send_mode"]
 
     @classmethod
     def load(cls) -> dict[str, Any]:

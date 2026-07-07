@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from cache import cache
-from config import Config, ensure_data_dirs
+from config import BASE_DIR, Config, ensure_data_dirs
 from runtime_state import runtime_state
 from tools import detect_privacy
 
@@ -24,6 +24,7 @@ def upload_pdf(filename: str, content: bytes) -> dict[str, Any]:
     markdown = normalize_markdown(extracted)
     Path(Config.resume_name).write_text(markdown, encoding="utf-8")
     cache.load()
+    generate_resume_image()
     runtime_state.log("PDF 简历已上传并提取")
     return get_resume()
 
@@ -52,6 +53,27 @@ def normalize_markdown(text: str) -> str:
     if cleaned.startswith("#"):
         return cleaned + "\n"
     return "# 我的简历\n\n" + cleaned + "\n"
+
+
+def generate_resume_image() -> None:
+    pdf_path = Path(Config.original_resume_pdf_name)
+    jpg_path = Path(str(Config.resume_image_path))
+    jpg_path = jpg_path if jpg_path.is_absolute() else BASE_DIR / jpg_path
+    if not pdf_path.exists():
+        runtime_state.log(f"PDF 不存在，跳过生成简历图片: {pdf_path}")
+        return
+    try:
+        import fitz
+    except ImportError:
+        runtime_state.log("缺少 PyMuPDF 依赖，跳过简历图片生成", source="error")
+        return
+    jpg_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open(str(pdf_path))
+    page = doc[0]
+    pix = page.get_pixmap(dpi=200)
+    pix.save(str(jpg_path))
+    doc.close()
+    runtime_state.log(f"简历图片已生成: {jpg_path}")
 
 
 def save_resume(markdown: str) -> dict[str, Any]:

@@ -26,7 +26,7 @@ import database
 import greeting_service
 import resume_service
 from cache import cache
-from config import Config
+from config import BASE_DIR, Config
 from core import SCORING_VERSION, analyze_job
 from runtime_state import runtime_state
 from schema import (
@@ -312,6 +312,17 @@ async def create_event(payload: EventCreate):
 @app.get("/events", summary="读取执行事件")
 async def events(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     return {"events": database.list_events(limit, offset)}
+
+
+@app.get("/resume-image", summary="获取简历图片")
+async def get_resume_image():
+    from fastapi.responses import FileResponse
+    img_path = Path(Config.resume_image_path)
+    if not img_path.is_absolute():
+        img_path = BASE_DIR / img_path
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="简历图片未生成，请先上传 PDF 简历")
+    return FileResponse(str(img_path), media_type="image/jpeg")
 
 
 @app.post("/resume/upload-pdf", summary="上传 PDF 简历")

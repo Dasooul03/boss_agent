@@ -594,6 +594,7 @@ def print_status_panel() -> None:
 ║  简历        {_icon(resume_ok)} {'已保存' if resume_ok else '未准备'}{' ' * 42}║
 ║  用户画像    {_icon(profile_ok)} {'已生成' if profile_ok else '未生成'}{' ' * 42}║
 ║  打招呼语    {_icon(greeting_ok)} {'已确认' if greeting_ok else '未确认'}{' ' * 42}║
+║  发送模式    {'图片简历' if Config.send_mode == 'image' else '文字话术'}{' ' * 46}║
 ╠══════════════════════════════════════════════════════════════╣
 ║  脚本连接    {_icon(script_ok)} {'已连接' if script_ok else '等待中...'}{' ' * 42}║
 ║  控制状态    {'▶ running' if control == 'running' else '⏸ ' + control}{' ' * 40}║
@@ -606,7 +607,7 @@ def print_status_panel() -> None:
 │  Job Seeker  v2026.07                                        │
 │  {model_label} │ 评分思考: {scoring_think} │ 画像/标签: {scoring_think} │ 打招呼: {greeting_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
 │  模型: {model_status[:50]} │ 评分令牌: {Config.job_score_num_predict_think_off}/{Config.job_score_num_predict_think_on} │
-│  简历: {_icon(resume_ok)} 画像: {_icon(profile_ok)} 话术: {_icon(greeting_ok)} │ 脚本: {_icon(script_ok)} │ {control} │
+│  简历: {_icon(resume_ok)} 画像: {_icon(profile_ok)} 话术: {_icon(greeting_ok)} 发送: {'图片' if Config.send_mode == 'image' else '文字'} │ 脚本: {_icon(script_ok)} │ {control} │
 └──────────────────────────────────────────────────────────────┘"""
 
     print(panel, flush=True)
@@ -640,6 +641,7 @@ def print_summary() -> None:
     print(f"- 画像: {'已生成' if cache.cache_status()['profile_generated'] else '未生成'}")
     print(f"- 用户详情: {'已确认' if cache.user_detail.strip() else '未确认'}")
     print(f"- 话术: {greeting.get('active_content', '')[:80]}")
+    print(f"- 发送模式: {'图片简历' if Config.send_mode == 'image' else '文字话术'}")
 
 
 def script_install_url() -> str:
@@ -1069,6 +1071,7 @@ def show_help() -> None:
   logs          显示最近日志
   script        显示篡改猴脚本安装/更新地址
   doctor        检查依赖、Ollama 和油猴连接
+  send-mode     切换发送模式: text(发话术) / image(发简历图片)
   help          显示帮助
   quit          退出 CLI
 """.strip()
@@ -1112,6 +1115,14 @@ def command_loop() -> None:
             show_script_install()
         elif command == "doctor":
             show_doctor()
+        elif command in {"send-mode", "sendmode"}:
+            mode = input("  发送模式 (text=发话术, image=发简历图片) [Enter 不修改]: ").strip().lower()
+            if mode in ("text", "image"):
+                Config.save({"send_mode": mode})
+                print(f"[配置] 发送模式已切换为: {mode}")
+                print_status_panel()
+            elif mode:
+                print("[配置] 无效模式，请输入 text 或 image")
         elif command == "help":
             show_help()
         elif command in {"quit", "exit"}:

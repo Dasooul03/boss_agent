@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Job Seeker
 // @namespace    http://tampermonkey.net/
-// @version      2026.06.26.7
+// @version      2026.07.07.1
 // @description  Job Seeker 篡改猴插件
 // @author       Chatbot-Zhou
 // @match        https://www.zhipin.com/*
@@ -31,6 +31,7 @@
         timestampTimeout: 120000, // 页面跳转来源标记有效期，单位毫秒
         jobInfoResponseTimeout: 90000, // 详情页回传职位信息的最长等待时间
         onlyGreet: true, // 仅辅助打招呼，不自动扫描普通聊天页
+        sendMode: 'text', // text=发话术, image=发简历图片
         sessionGreetLimit: 50,
         actionDelayMs: 2500,
         manualInterventionMaxRetries: 3,
@@ -51,6 +52,9 @@
         }
         if (Number.isFinite(Number(config.session_greet_limit))) {
             OPTIONS.sessionGreetLimit = Number(config.session_greet_limit);
+        }
+        if (config.send_mode === 'image' || config.send_mode === 'text') {
+            OPTIONS.sendMode = config.send_mode;
         }
     }
 
@@ -944,6 +948,39 @@
                 } catch (err) {
                     handleError(err);
                 }
+            });
+        }
+
+        /**
+         * 请求二进制数据（图片等）
+         */
+        /**
+         * 请求二进制数据（图片等）
+         */
+        __httpBinary(path) {
+            return new Promise((resolve, reject) => {
+                const hasLegacyRequest = typeof GM_xmlhttpRequest !== 'undefined';
+                const hasPromiseRequest = typeof GM !== 'undefined' && GM.xmlHttpRequest;
+                const request = hasLegacyRequest ? GM_xmlhttpRequest : (hasPromiseRequest ? GM.xmlHttpRequest : null);
+                if (!request) {
+                    reject('缺少 GM.xmlHttpRequest 权限');
+                    return;
+                }
+                request({
+                    method: 'GET',
+                    url: OPTIONS.serverHost + path,
+                    responseType: 'blob',
+                    timeout: 30000,
+                    onload: (resp) => {
+                        if (resp.status != 200) {
+                            reject(new Error(`获取图片失败: ${resp.status}`));
+                            return;
+                        }
+                        resolve(resp.response);
+                    },
+                    onerror: (err) => reject(new Error(`请求图片出错: ${err}`)),
+                    ontimeout: () => reject(new Error('请求图片超时')),
+                });
             });
         }
 
@@ -2936,6 +2973,79 @@
                 })
             };
 
+            // 发送简历图片
+            const sendImage = async (pageApi) => {
+                let blob;
+                try {
+                    blob = await pageApi.__httpBinary('/resume-image');
+                } catch (e) {
+                    throw new Error(`获取简历图片失败: ${e}`);
+                }
+                const file = new File([blob], 'resume.jpg', { type: 'image/jpeg' });
+                await pageApi.event('send_image_started', '准备发送简历图片', 'script', 'info');
+
+                // 通过 BOSS 内置的隐藏 file input 上传图片（重试 5 次）
+                const imageInputSelector = [
+                    '.toolbar-btn-content.icon.btn-sendimg input[type="file"]',
+                    '[class*="sendimg"] input[type="file"]',
+                    'input[type="file"][accept*="image"]',
+                ];
+                const fileInputFound = imageInputSelector.some(s => document.querySelector(s));
+                await pageApi.event('send_image_diag', `file input 查找结果: ${fileInputFound ? '已找到' : '未找到'}`, 'script', 'info');
+
+                let fileInput = null;
+                if (!fileInputFound) {
+                    // 未找到 input: 尝试点击附件按钮触发 Vue 渲染 hidden input
+                    const attachBtn = document.querySelector('[class*="toolbar"] [class*="btn"], [class*="sendimg"], [class*="upload"]');
+                    if (attachBtn) {
+                        await pageApi.event('send_image_click_attach', '未找到 file input，点击附件按钮触发渲染', 'script', 'info');
+                        attachBtn.click();
+                        await tools.asyncSleep(800);
+                    }
+                }
+
+                let sent = false;
+                let lastError = '未知错误';
+                for (let retry = 0; retry < 5 && !sent; retry++) {
+                    if (retry > 0) await tools.asyncSleep(1000);
+                    fileInput = null;
+                    for (const sel of imageInputSelector) {
+                        fileInput = document.querySelector(sel);
+                        if (fileInput) break;
+                    }
+                    if (!fileInput) {
+                        lastError = '未找到 file input 元素';
+                        continue;
+                    }
+                    try {
+                        const dt = new DataTransfer();
+                        dt.items.add(file);
+                        try { fileInput.files = dt.files; } catch (_) {
+                            Object.defineProperty(fileInput, 'files', { value: dt.files, configurable: true });
+                        }
+                        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+                        const before = getSelfMessageSnapshot();
+                        await tools.asyncSleep(2000);
+                        const after = getSelfMessageSnapshot();
+                        if (after.count > before.count) {
+                            sent = true;
+                            await pageApi.event('send_image_fileinput_ok', `通过 file input 上传图片成功 (第${retry + 1}次)`, 'script', 'info');
+                        } else {
+                            lastError = '设置文件后未检测到新消息';
+                        }
+                    } catch (e) {
+                        lastError = String(e);
+                    }
+                }
+
+                if (!sent) {
+                    throw new Error(`图片上传失败: ${lastError}`);
+                }
+
+                // BOSS 上传图片后会自动发送，无需再点击发送按钮
+                await pageApi.event('send_image_finished', '简历图片已发送', 'script', 'info');
+            };
+
             // 打招呼
             const closeTemporaryChatPage = async (requestId) => {
                 tools.releaseGreetClaim(requestId);
@@ -2988,19 +3098,26 @@
                 loop();
 
                 try {
-                    await pageApi.heartbeat('chat_greet', 'running', '准备打招呼');
-                    await pageApi.event('greet_started', '打招呼窗口准备发送', 'script');
-                    const introduce = (await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI, {
-                        greetRequestId,
-                        attempt: greetAttempt,
-                    })).introduce;
-                    if (!introduce) throw new Error('未启用打招呼用语');
-                    await tools.actionSleep();
-                    ensureCurrentGreetRequest();
-                    await sendMsg(introduce);
+                    const bootHb = await pageApi.heartbeat('chat_greet', 'running', '准备打招呼');
+                    if (bootHb && bootHb.config) applyBackendConfig(bootHb.config);
+                    await pageApi.event('greet_started', `打招呼窗口准备发送 (sendMode=${OPTIONS.sendMode})`, 'script');
+                    if (OPTIONS.sendMode === 'image') {
+                        await tools.actionSleep();
+                        ensureCurrentGreetRequest();
+                        await sendImage(pageApi);
+                    } else {
+                        const introduce = (await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI, {
+                            greetRequestId,
+                            attempt: greetAttempt,
+                        })).introduce;
+                        if (!introduce) throw new Error('未启用打招呼用语');
+                        await tools.actionSleep();
+                        ensureCurrentGreetRequest();
+                        await sendMsg(introduce);
+                    }
                     const greetContext = claimedContext || {};
                     await pageApi.createAction('greet', {
-                        message: introduce,
+                        message: OPTIONS.sendMode === 'image' ? '(简历图片)' : introduce,
                         context: greetContext,
                     }, greetContext, 'completed');
                     const sessionGreetCount = tools.increaseSessionGreetCount();
@@ -3046,6 +3163,12 @@
 
             // 主函数
             const main = async () => {
+                // 预先加载后端配置（send_mode 等）
+                try {
+                    const bootCfg = await pageApi.heartbeat('chat', 'idle', '加载配置');
+                    if (bootCfg && bootCfg.config) applyBackendConfig(bootCfg.config);
+                } catch (_) { /* 配置加载失败不影响后续 */ }
+
                 // 判断来源
                 const now = new Date().getTime();
                 const greetOpenedAt = tools.getTimestamp(this.targets.chatGreet);
