@@ -1,7 +1,6 @@
 '''
 Description: 提示词们
 Author: Chatbot-Zhou
-OriginalAuthor: 嘎嘣脆的贝爷
 Date: 2025-02-14 13:11:24
 LastEditTime: 2025-02-26 13:21:34
 LastEditors: Chatbot-Zhou

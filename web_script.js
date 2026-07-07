@@ -18,7 +18,6 @@
 
 (function () {
     'use strict';
-    // OriginalAuthor: 嘎嘎脆的贝爷
 
     // 配置项
     const OPTIONS = {

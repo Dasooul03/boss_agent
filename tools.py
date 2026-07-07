@@ -1,7 +1,6 @@
 '''
 Description: 工具
 Author: Chatbot-Zhou
-OriginalAuthor: 嘎嘣脆的贝爷
 Date: 2025-02-14 22:31:43
 LastEditTime: 2025-02-16 01:12:05
 LastEditors: Chatbot-Zhou
