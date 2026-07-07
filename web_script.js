@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Job Seeker
+// @name         BossAgent
 // @namespace    http://tampermonkey.net/
 // @version      2026.07.07.1
-// @description  Job Seeker 篡改猴插件
+// @description  BossAgent Tampermonkey userscript for BOSS Zhipin
 // @author       Chatbot-Zhou
 // @match        https://www.zhipin.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=zhipin.com
@@ -338,7 +338,7 @@
             return Number(localStorage.getItem(key));
         },
         openCooldownKey(key, href) {
-            return `__job_seeker_open_cooldown:${key}:${this.normalUrl(href) || href}`;
+            return `__boss_agent_open_cooldown:${key}:${this.normalUrl(href) || href}`;
         },
         canOpenUrl(href, key, cooldownMs = OPTIONS.openCooldownMs) {
             const cooldownKey = this.openCooldownKey(key, href);
@@ -1274,10 +1274,10 @@
             let hasSearchLease = false;
             let leaseTimer = null;
             let activeTempTab = null;
-            const searchLeaseKey = '__job_seeker_search_lease';
-            const manualRecoveryStateKey = '__job_seeker_manual_recovery';
+            const searchLeaseKey = '__boss_agent_search_lease';
+            const manualRecoveryStateKey = '__boss_agent_manual_recovery';
             let manualInterventionRetryCount = 0;
-            const pageFailureStateKey = '__job_seeker_page_failure_recovery';
+            const pageFailureStateKey = '__boss_agent_page_failure_recovery';
             let pageFailureRetryCount = 0;
 
             const loadManualRecoveryState = () => {

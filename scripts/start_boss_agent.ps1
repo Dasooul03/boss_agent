@@ -16,17 +16,17 @@ $OpenCooldownSeconds = 60
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "[Job Seeker] $Message" -ForegroundColor Cyan
+    Write-Host "[BossAgent] $Message" -ForegroundColor Cyan
 }
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "[Job Seeker] $Message" -ForegroundColor Yellow
+    Write-Host "[BossAgent] $Message" -ForegroundColor Yellow
 }
 
 function Write-Fail {
     param([string]$Message)
-    Write-Host "[Job Seeker] $Message" -ForegroundColor Red
+    Write-Host "[BossAgent] $Message" -ForegroundColor Red
 }
 
 function Pause-And-Exit {
@@ -69,7 +69,7 @@ function Test-TcpPort {
     }
 }
 
-function Test-JobSeekerHealth {
+function Test-BossAgentHealth {
     param([int]$Port)
     try {
         $result = Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/health" -Method Get -TimeoutSec 2
@@ -133,7 +133,7 @@ Write-Info "Project root: $ProjectRoot"
 
 $requirementsPath = Join-Path $ProjectRoot "requirements.txt"
 if (-not (Test-Path -LiteralPath $requirementsPath)) {
-    Write-Fail "requirements.txt was not found. Please run this launcher from the Job Seeker project root."
+    Write-Fail "requirements.txt was not found. Please run this launcher from the BossAgent project root."
     Pause-And-Exit 1
 }
 
@@ -178,8 +178,8 @@ $ollamaHost = [string](Get-ConfigValue $config "ollama_host" "http://127.0.0.1:1
 $openaiKey = [string](Get-ConfigValue $config "openai_api_key" "")
 
 if (Test-TcpPort $port) {
-    if (Test-JobSeekerHealth $port) {
-        Write-Warn "Job Seeker is already running on port $port. This launcher will not start another backend."
+    if (Test-BossAgentHealth $port) {
+        Write-Warn "BossAgent is already running on port $port. This launcher will not start another backend."
         if (-not $NoOpen) {
             Open-StartupPages $port
         }
@@ -210,7 +210,7 @@ if ($provider -eq "openai" -and -not $openaiKey) {
     Write-Warn "Provider is OpenAI, but API Key is missing. Run config in the CLI."
 }
 
-Write-Info "Starting Job Seeker CLI..."
+Write-Info "Starting BossAgent CLI..."
 $mainPy = Join-Path $ProjectRoot "main.py"
 & $pythonExe $mainPy
 $exitCode = $LASTEXITCODE

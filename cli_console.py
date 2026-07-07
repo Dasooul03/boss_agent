@@ -579,7 +579,7 @@ def print_status_panel() -> None:
 
     panel = f"""
 ╔══════════════════════════════════════════════════════════════╗
-║              Job Seeker 状态面板                              ║
+║              BossAgent 状态面板                              ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  服务地址    http://{Config.server_host}:{Config.server_port:<45}║
 ║  脚本地址    http://{Config.server_host}:{Config.server_port}/web_script.user.js{' ' * (30 - len(str(Config.server_port)))}║
@@ -604,7 +604,7 @@ def print_status_panel() -> None:
     if Config.log_verbosity == "compact":
         panel = f"""
 ┌──────────────────────────────────────────────────────────────┐
-│  Job Seeker  v2026.07                                        │
+│  BossAgent  v2026.07                                        │
 │  {model_label} │ 评分思考: {scoring_think} │ 画像/标签: {scoring_think} │ 打招呼: {greeting_think} │ 阈值: {Config.score_threshold}分 │ 上限: {Config.session_greet_limit}  │
 │  模型: {model_status[:50]} │ 评分令牌: {Config.job_score_num_predict_think_off}/{Config.job_score_num_predict_think_on} │
 │  简历: {_icon(resume_ok)} 画像: {_icon(profile_ok)} 话术: {_icon(greeting_ok)} 发送: {'图片' if Config.send_mode == 'image' else '文字'} │ 脚本: {_icon(script_ok)} │ {control} │
@@ -996,8 +996,8 @@ def model_ready_for_autorun() -> bool:
 def auto_prepare_saved_configuration() -> bool:
     cache.load()
     if not cache.resume.strip():
-        print("[配置] 未找到已保存简历。请先运行 start_job_seeker.bat 完成人工配置。")
-        return block_autorun("未找到已保存简历，自动运行已暂停", next_action="运行 start_job_seeker.bat 配置简历")
+        print("[配置] 未找到已保存简历。请先运行 start_boss_agent.bat 完成人工配置。")
+        return block_autorun("未找到已保存简历，自动运行已暂停", next_action="运行 start_boss_agent.bat 配置简历")
     if not model_ready_for_autorun():
         return block_autorun(
             "模型配置不可用，自动运行已暂停",
@@ -1081,7 +1081,7 @@ def show_help() -> None:
 def command_loop() -> None:
     show_help()
     while True:
-        command = input("\njob-seeker> ").strip().lower()
+        command = input("\nboss-agent> ").strip().lower()
         if not command:
             continue
         if command == "status":
@@ -1136,7 +1136,7 @@ def run_cli(app, shutdown_callback: Callable[[], None] | None = None) -> None:
     database.init_db()
     cache.load()
     start_event_printer()
-    runtime_state.emit("cli_start", "Job Seeker CLI 启动", source="startup")
+    runtime_state.emit("cli_start", "BossAgent CLI 启动", source="startup")
     run_initialization()
     server = start_api_server(app)
     wait_for_api_ready()
@@ -1159,7 +1159,7 @@ def run_autorun(app, shutdown_callback: Callable[[], None] | None = None) -> int
     database.init_db()
     cache.load()
     start_event_printer()
-    runtime_state.emit("autorun_start", "Job Seeker 自动运行启动", source="startup")
+    runtime_state.emit("autorun_start", "BossAgent 自动运行启动", source="startup")
     server = start_api_server(app)
 
     def shutdown_autorun() -> None:

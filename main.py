@@ -1,4 +1,4 @@
-"""Job Seeker local API used by the CLI controller and Tampermonkey script."""
+"""BossAgent local API used by the CLI controller and Tampermonkey script."""
 
 from __future__ import annotations
 
@@ -45,9 +45,9 @@ from tools import script_connect_hosts
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_SCRIPT_PATH = BASE_DIR / "web_script.js"
-MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="jobseeker-model")
+MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bossagent-model")
 MODEL_EXECUTOR_SHUTDOWN = False
-ALLOW_REMOTE_API_ENV = "JOB_SEEKER_ALLOW_REMOTE"
+ALLOW_REMOTE_API_ENV = "BOSS_AGENT_ALLOW_REMOTE"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 RATE_LIMIT_BUCKET_TTL_SECONDS = RATE_LIMIT_WINDOW_SECONDS * 2
@@ -74,17 +74,17 @@ async def lifespan(app: FastAPI):
     Config.load()
     database.init_db()
     cache.load()
-    runtime_state.log("Job Seeker 服务已启动")
+    runtime_state.log("BossAgent 服务已启动")
     runtime_state.log(f"岗位评分版本: {SCORING_VERSION}")
     try:
         yield
     finally:
         runtime_state.log("正在关闭服务…")
         shutdown_model_executor()
-        runtime_state.log("Job Seeker 服务已关闭")
+        runtime_state.log("BossAgent 服务已关闭")
 
 
-app = FastAPI(title="Job Seeker", version="2026.06-cli", lifespan=lifespan)
+app = FastAPI(title="BossAgent", version="2026.06-cli", lifespan=lifespan)
 
 
 def cors_origins() -> list[str]:
@@ -157,7 +157,7 @@ async def local_api_guard(request: Request, call_next):
             level="warning",
             detail={"client": request.client.host if request.client else ""},
         )
-        return JSONResponse(status_code=403, content={"detail": "Job Seeker API 仅允许本机访问"})
+        return JSONResponse(status_code=403, content={"detail": "BossAgent API 仅允许本机访问"})
     try:
         check_rate_limit(request)
     except HTTPException as exc:
@@ -230,7 +230,7 @@ def render_userscript() -> str:
 @app.get("/")
 async def index():
     return {
-        "message": "Job Seeker CLI API is running",
+        "message": "BossAgent CLI API is running",
         "health": "/health",
         "status": "/status",
         "userscript": "/web_script.user.js",
@@ -573,7 +573,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         raise SystemExit(run_api_only())
     if len(sys.argv) > 1 and sys.argv[1] in {"agent", "mcp"}:
-        print("[Job Seeker] 当前版本不再提供 agent/MCP 入口。请使用 start_job_seeker_auto.bat 自动运行，或使用 start_job_seeker.bat 人工配置。")
+        print("[BossAgent] 当前版本不再提供 agent/MCP 入口。请使用 start_boss_agent_auto.bat 自动运行，或使用 start_boss_agent.bat 人工配置。")
         raise SystemExit(2)
     from cli_console import run_autorun, run_cli
 

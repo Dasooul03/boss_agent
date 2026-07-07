@@ -1,14 +1,14 @@
-# Job Seeker
+# BossAgent
 
 > 当前版本只做岗位分析和打招呼流程。普通 BOSS 聊天页不会再自动检查官方附件简历请求卡片，也不会自动发送简历附件；简历文件仍用于画像、标签、评分和话术生成。
 > 旧数据库中可能仍保留 `resume_sent` 一类历史字段，但当前版本不会再产生发送简历附件动作。
 
-Job Seeker 是一个本机运行的 BOSS 直聘辅助工具。它由本地 Python 后端、命令行控制台和 Tampermonkey 油猴脚本组成，用于读取岗位、调用模型评分、记录历史，并在人工确认过配置后自动执行打招呼流程。
+BossAgent 是一个本机运行的 BOSS 直聘辅助工具。它由本地 Python 后端、命令行控制台和 Tampermonkey 油猴脚本组成，用于读取岗位、调用模型评分、记录历史，并在人工确认过配置后自动执行打招呼流程。
 
 当前版本只保留两条清晰入口：
 
-- `start_job_seeker.bat`：人工模式，用来首次配置、编辑简历、确认画像、调整标签、查看日志和排查问题。
-- `start_job_seeker_auto.bat`：自动模式，读取已有配置后直接启动，适合让 Hermes/Codex/其他 agent 打开这个脚本。
+- `start_boss_agent.bat`：人工模式，用来首次配置、编辑简历、确认画像、调整标签、查看日志和排查问题。
+- `start_boss_agent_auto.bat`：自动模式，读取已有配置后直接启动，适合让 Hermes/Codex/其他 agent 打开这个脚本。
 
 项目不再提供 MCP 或 JSON Agent 控制入口。`python main.py agent` 和 `python main.py mcp` 会明确提示不支持。Agent 后续只需要启动自动模式，并通过 `/status`、`/logs` 观察状态。
 
@@ -49,7 +49,7 @@ ollama serve
 双击：
 
 ```text
-start_job_seeker.bat
+start_boss_agent.bat
 ```
 
 或在项目目录运行：
@@ -109,7 +109,7 @@ start
 双击：
 
 ```text
-start_job_seeker_auto.bat
+start_boss_agent_auto.bat
 ```
 
 或运行：
@@ -140,7 +140,7 @@ python main.py autorun
 
 Agent 不需要调用 MCP 或业务 API。推荐流程很简单：
 
-1. 启动 `start_job_seeker_auto.bat`。
+1. 启动 `start_boss_agent_auto.bat`。
 2. 等待窗口输出，判断是否启动成功。
 3. 用 `GET http://127.0.0.1:33333/status` 观察控制状态、脚本心跳、计数和配置状态。
 4. 用 `GET http://127.0.0.1:33333/logs` 查看最近日志。
@@ -157,7 +157,7 @@ Agent 不应该直接写入 API Key、简历正文、画像正文、打招呼话
 
 状态面板中的模型连通性会做一次轻量预热检测：Ollama 会读取流式首个响应，OpenAI 兼容接口会发送一次极短的 `/chat/completions` 请求。预热失败只代表当前配置或网络不可用，不会绕过后续人工排查。
 
-本地 API 默认只允许 `127.0.0.1`、`localhost` 或 `::1` 访问，并对 `/jobs/analyze`、`/greeting/generate`、`/greeting/variants` 做轻量限流。不要把服务暴露到公网或局域网；如确实需要远程访问，必须显式设置 `JOB_SEEKER_ALLOW_REMOTE=true` 并自行承担网络安全风险。
+本地 API 默认只允许 `127.0.0.1`、`localhost` 或 `::1` 访问，并对 `/jobs/analyze`、`/greeting/generate`、`/greeting/variants` 做轻量限流。不要把服务暴露到公网或局域网；如确实需要远程访问，必须显式设置 `BOSS_AGENT_ALLOW_REMOTE=true` 并自行承担网络安全风险。
 
 ## 常用 CLI 命令
 
@@ -302,7 +302,7 @@ taskkill /PID <PID> /F
 - 油猴脚本能连接本地 API。
 - BOSS 已登录且没有验证码或风控页面。
 
-缺少任一项时，自动模式会暂停并打印原因。此时建议打开 `start_job_seeker.bat`，用 `status`、`doctor`、`logs` 排查。
+缺少任一项时，自动模式会暂停并打印原因。此时建议打开 `start_boss_agent.bat`，用 `status`、`doctor`、`logs` 排查。
 
 ### 模型评分全是 0 或提示没有返回内容
 
@@ -355,13 +355,13 @@ goodjobs-main/
 ├─ tools.py                        # 通用工具函数
 ├─ web_script.js                   # Tampermonkey 脚本
 ├─ requirements.txt                # Python 依赖
-├─ start_job_seeker.bat            # 人工启动器
-├─ start_job_seeker_auto.bat       # 自动启动器
+├─ start_boss_agent.bat            # 人工启动器
+├─ start_boss_agent_auto.bat       # 自动启动器
 ├─ resume-example.md               # 简历示例文件
 ├─ LICENSE                         # MIT License
 ├─ scripts/
-│  ├─ start_job_seeker.ps1         # 人工启动器 PowerShell 实现
-│  └─ start_job_seeker_auto.ps1    # 自动启动器 PowerShell 实现
+│  ├─ start_boss_agent.ps1         # 人工启动器 PowerShell 实现
+│  └─ start_boss_agent_auto.ps1    # 自动启动器 PowerShell 实现
 └─ data/                           # 个人数据目录，本地使用
    ├─ config.json
    ├─ app.db
@@ -376,8 +376,8 @@ goodjobs-main/
 ```powershell
 Get-ChildItem -Recurse -Filter *.py -File | Where-Object { $_.FullName -notlike '*\.venv\*' } | ForEach-Object { python -m py_compile $_.FullName }
 node --check web_script.js
-powershell -NoProfile -Command '$null = [scriptblock]::Create((Get-Content scripts/start_job_seeker.ps1 -Raw))'
-powershell -NoProfile -Command '$null = [scriptblock]::Create((Get-Content scripts/start_job_seeker_auto.ps1 -Raw))'
+powershell -NoProfile -Command '$null = [scriptblock]::Create((Get-Content scripts/start_boss_agent.ps1 -Raw))'
+powershell -NoProfile -Command '$null = [scriptblock]::Create((Get-Content scripts/start_boss_agent_auto.ps1 -Raw))'
 ```
 
 这些命令只做静态检查，不会打开浏览器。

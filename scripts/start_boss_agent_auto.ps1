@@ -17,17 +17,17 @@ $DefaultOllamaModel = "qwen3:1.7b"
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "[Job Seeker Auto] $Message" -ForegroundColor Cyan
+    Write-Host "[BossAgent-Auto] $Message" -ForegroundColor Cyan
 }
 
 function Write-Warn {
     param([string]$Message)
-    Write-Host "[Job Seeker Auto] $Message" -ForegroundColor Yellow
+    Write-Host "[BossAgent-Auto] $Message" -ForegroundColor Yellow
 }
 
 function Write-Fail {
     param([string]$Message)
-    Write-Host "[Job Seeker Auto] $Message" -ForegroundColor Red
+    Write-Host "[BossAgent-Auto] $Message" -ForegroundColor Red
 }
 
 function Pause-And-Exit {
@@ -70,7 +70,7 @@ function Test-TcpPort {
     }
 }
 
-function Test-JobSeekerHealth {
+function Test-BossAgentHealth {
     param([int]$Port)
     try {
         $result = Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/health" -Method Get -TimeoutSec 2
@@ -260,30 +260,30 @@ function Open-StartupPages {
     }
 }
 
-function Resume-ExistingJobSeeker {
+function Resume-ExistingBossAgent {
     param([int]$Port)
     try {
         $body = @{ command = "resume"; new_run = $true } | ConvertTo-Json -Compress
         Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/control" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 5 | Out-Null
-        Write-Info "Existing Job Seeker service resumed with a new run."
+        Write-Info "Existing BossAgent service resumed with a new run."
         return $true
     } catch {
-        Write-Warn "Failed to resume existing Job Seeker service: $($_.Exception.Message)"
+        Write-Warn "Failed to resume existing BossAgent service: $($_.Exception.Message)"
         return $false
     }
 }
 
-function Get-ExistingJobSeekerStatus {
+function Get-ExistingBossAgentStatus {
     param([int]$Port)
     try {
         return Invoke-RestMethod -Uri "http://127.0.0.1:${Port}/status" -Method Get -TimeoutSec 5
     } catch {
-        Write-Warn "Failed to read existing Job Seeker status: $($_.Exception.Message)"
+        Write-Warn "Failed to read existing BossAgent status: $($_.Exception.Message)"
         return $null
     }
 }
 
-function Test-ExistingJobSeekerReady {
+function Test-ExistingBossAgentReady {
     param([object]$Status)
     if ($null -eq $Status) {
         return $false
@@ -306,7 +306,7 @@ Write-Info "Project root: $ProjectRoot"
 
 $requirementsPath = Join-Path $ProjectRoot "requirements.txt"
 if (-not (Test-Path -LiteralPath $requirementsPath)) {
-    Write-Fail "requirements.txt was not found. Please run this launcher from the Job Seeker project root."
+    Write-Fail "requirements.txt was not found. Please run this launcher from the BossAgent project root."
     Pause-And-Exit 1
 }
 
@@ -378,14 +378,14 @@ $ollamaHost = [string](Get-ConfigValue $config "ollama_host" "http://127.0.0.1:1
 $openaiKey = [string](Get-ConfigValue $config "openai_api_key" "")
 
 if (Test-TcpPort $port) {
-    if (Test-JobSeekerHealth $port) {
-        Write-Warn "Job Seeker is already running on port $port. Attaching to the existing backend."
-        $existingStatus = Get-ExistingJobSeekerStatus $port
-        if (Test-ExistingJobSeekerReady $existingStatus) {
-            Resume-ExistingJobSeeker $port | Out-Null
+    if (Test-BossAgentHealth $port) {
+        Write-Warn "BossAgent is already running on port $port. Attaching to the existing backend."
+        $existingStatus = Get-ExistingBossAgentStatus $port
+        if (Test-ExistingBossAgentReady $existingStatus) {
+            Resume-ExistingBossAgent $port | Out-Null
         } else {
             Write-Warn "Existing backend is alive, but saved configuration is not fully ready. It will not be resumed automatically."
-            Write-Warn "Open http://127.0.0.1:${port}/status or use start_job_seeker.bat to finish configuration."
+            Write-Warn "Open http://127.0.0.1:${port}/status or use start_boss_agent.bat to finish configuration."
         }
         Open-StartupPages $port
         Write-Info "Existing backend is attached. You can monitor: http://127.0.0.1:${port}/status"
@@ -401,15 +401,15 @@ if ($provider -eq "ollama") {
         Write-Info "Ollama is reachable: $ollamaHost"
         Ensure-OllamaModel $ollamaExe $ollamaHost $DefaultOllamaModel | Out-Null
     } else {
-        Write-Warn "Ollama is not ready. Job Seeker will still start and remain paused/blocked until the model is available."
+        Write-Warn "Ollama is not ready. BossAgent will still start and remain paused/blocked until the model is available."
     }
 }
 
 if ($provider -eq "openai" -and -not $openaiKey) {
-    Write-Warn "Provider is OpenAI, but API Key is missing. Job Seeker will start and remain paused/blocked."
+    Write-Warn "Provider is OpenAI, but API Key is missing. BossAgent will start and remain paused/blocked."
 }
 
-Write-Info "Starting Job Seeker auto-run..."
+Write-Info "Starting BossAgent auto-run..."
 Write-Info "This mode uses saved configuration and starts automatically after the userscript connects."
 $mainPy = Join-Path $ProjectRoot "main.py"
 & $pythonExe $mainPy autorun
