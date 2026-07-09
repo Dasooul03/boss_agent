@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      2026.07.07.1
 // @description  BossAgent Tampermonkey userscript for BOSS Zhipin
-// @author       Chatbot-Zhou
+// @author       Dasooul
 // @match        https://www.zhipin.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=zhipin.com
 // @grant        GM_xmlhttpRequest
@@ -3003,45 +3003,50 @@
                     }
                 }
 
-                let sent = false;
-                let lastError = '未知错误';
-                for (let retry = 0; retry < 5 && !sent; retry++) {
+                // 第一步：查找 file input（最多重试 5 次）
+                fileInput = null;
+                for (let retry = 0; retry < 5; retry++) {
                     if (retry > 0) await tools.asyncSleep(1000);
                     fileInput = null;
                     for (const sel of imageInputSelector) {
                         fileInput = document.querySelector(sel);
                         if (fileInput) break;
                     }
-                    if (!fileInput) {
-                        lastError = '未找到 file input 元素';
-                        continue;
-                    }
+                    if (fileInput) break;
+                }
+                if (!fileInput) {
+                    throw new Error('图片上传失败: 未找到 file input 元素');
+                }
+
+                // 第二步：设置文件并触发上传（只触发一次）
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                try { fileInput.files = dt.files; } catch (_) {
+                    Object.defineProperty(fileInput, 'files', { value: dt.files, configurable: true });
+                }
+                fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+                // 第三步：等待 BOSS 消费文件（最多 15 秒）
+                let consumed = false;
+                const pollStart = Date.now();
+                const beforeSnapshot = getSelfMessageSnapshot();
+                while (!consumed && Date.now() - pollStart < 15000) {
+                    await tools.asyncSleep(500);
                     try {
-                        const dt = new DataTransfer();
-                        dt.items.add(file);
-                        try { fileInput.files = dt.files; } catch (_) {
-                            Object.defineProperty(fileInput, 'files', { value: dt.files, configurable: true });
-                        }
-                        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-                        const before = getSelfMessageSnapshot();
-                        await tools.asyncSleep(2000);
+                        consumed = fileInput.files.length === 0;
+                    } catch (_) {
+                        consumed = true;
+                    }
+                    if (!consumed) {
                         const after = getSelfMessageSnapshot();
-                        if (after.count > before.count) {
-                            sent = true;
-                            await pageApi.event('send_image_fileinput_ok', `通过 file input 上传图片成功 (第${retry + 1}次)`, 'script', 'info');
-                        } else {
-                            lastError = '设置文件后未检测到新消息';
-                        }
-                    } catch (e) {
-                        lastError = String(e);
+                        if (after.count > beforeSnapshot.count) consumed = true;
                     }
                 }
-
-                if (!sent) {
-                    throw new Error(`图片上传失败: ${lastError}`);
+                if (!consumed) {
+                    await pageApi.event('send_image_diag', 'file input 未被清空但文件已设置，信任 BOSS 处理', 'script', 'warning');
+                } else {
+                    await pageApi.event('send_image_fileinput_ok', '图片文件已被 BOSS 消费，发送成功', 'script', 'info');
                 }
-
-                // BOSS 上传图片后会自动发送，无需再点击发送按钮
                 await pageApi.event('send_image_finished', '简历图片已发送', 'script', 'info');
             };
 
@@ -3101,6 +3106,8 @@
                     if (bootHb && bootHb.config) applyBackendConfig(bootHb.config);
                     await pageApi.event('greet_started', `打招呼窗口准备发送 (sendMode=${OPTIONS.sendMode})`, 'script');
                     if (OPTIONS.sendMode === 'image') {
+                        // 图片模式禁用重试：文件塞入 input 后 BOSS 接管，因检测不准而重试会导致多发
+                        Object.defineProperty(claim.context || {}, 'attempt', { value: 999 });
                         await tools.actionSleep();
                         ensureCurrentGreetRequest();
                         await sendImage(pageApi);
