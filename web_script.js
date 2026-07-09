@@ -131,7 +131,7 @@
         },
     };
 
-    // 宸ュ叿
+    // 工具函数
     const tools = {
         inWhiteList: function (pathObj) {
             return Object.values(pathObj).some((path) => {
