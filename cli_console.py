@@ -904,8 +904,8 @@ def handle_pending_actions_once() -> None:
             print(f"- #{action.get('id')} {action.get('action_type')} / {action.get('company') or '-'} / {action.get('title') or '-'}")
 
 
-def show_history() -> None:
-    history = database.list_history(20)
+def show_history(limit: int = 20) -> None:
+    history = database.list_history(limit)
     jobs = history["jobs"]
     actions = history["actions"]
     if not jobs and not actions:
@@ -945,12 +945,13 @@ def _print_report(title: str, report: dict[str, Any]) -> None:
             print(f"  {job.get('updated_at', '')[:19]}  {outcome:<22}  {job.get('company', '')} / {job.get('title', '')}")
 
 
-def show_report() -> None:
+def show_report(days: int = 7) -> None:
     """Show the current run and seven-day outcomes, inspired by task history views."""
-    current = database.job_report(hours=24 * 7, run_id=runtime_state.run_id)
-    recent = database.job_report(hours=24 * 7)
+    hours = 24 * days
+    current = database.job_report(hours=hours, run_id=runtime_state.run_id)
+    recent = database.job_report(hours=hours)
     _print_report(f"当前批次 {runtime_state.run_id}", current)
-    _print_report("最近 7 天", recent)
+    _print_report(f"最近 {days} 天", recent)
 
 
 def show_logs(limit: int = 30) -> None:
@@ -1161,9 +1162,9 @@ def show_help() -> None:
   pause         暂停运行
   stop          停止自动化
   actions       处理待确认动作
-  history       显示最近历史
-  report        汇总当前批次与最近 7 天的职位处理结果
-  logs          显示最近日志
+  history [N]   显示最近历史（默认 20 条）
+  report [天数] 汇总当前批次与指定天数内的职位处理结果（默认 7 天）
+  logs [N]      显示最近日志（默认 30 条）
   script        显示篡改猴脚本安装/更新地址
   doctor        检查依赖、Ollama 和油猴连接
   send-mode     切换发送模式: text(发话术) / image(发简历图片)
@@ -1173,10 +1174,29 @@ def show_help() -> None:
     )
 
 
+def _split_command(command_line: str) -> tuple[str, str]:
+    command, _, argument = command_line.strip().partition(" ")
+    return command.lower(), argument.strip()
+
+
+def _positive_argument(argument: str, default: int, maximum: int = 1000) -> int:
+    if not argument:
+        return default
+    try:
+        value = int(argument)
+    except ValueError:
+        print(f"[命令] 参数必须是正整数，已使用默认值 {default}。")
+        return default
+    if not 1 <= value <= maximum:
+        print(f"[命令] 参数范围为 1-{maximum}，已使用默认值 {default}。")
+        return default
+    return value
+
+
 def command_loop() -> None:
     show_help()
     while True:
-        command = input("\nboss-agent> ").strip().lower()
+        command, argument = _split_command(input("\nboss-agent> "))
         if not command:
             continue
         if command == "status":
@@ -1205,11 +1225,11 @@ def command_loop() -> None:
         elif command == "actions":
             handle_pending_actions_once()
         elif command == "history":
-            show_history()
+            show_history(_positive_argument(argument, 20, 500))
         elif command == "report":
-            show_report()
+            show_report(_positive_argument(argument, 7, 365))
         elif command == "logs":
-            show_logs()
+            show_logs(_positive_argument(argument, 30, 300))
         elif command == "script":
             show_script_install()
         elif command == "doctor":
