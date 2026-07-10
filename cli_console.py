@@ -928,6 +928,31 @@ def show_history() -> None:
             )
 
 
+def _print_report(title: str, report: dict[str, Any]) -> None:
+    print(f"\n[报告] {title}")
+    print(
+        f"- 已处理: {report['total']} / 推荐开聊: {report['recommended']} / "
+        f"已开聊: {report['greeted']} / 跳过: {report['skipped']} / 错误: {report['errors']}"
+    )
+    outcomes = report.get("outcomes") or {}
+    if outcomes:
+        print("- 决策分布: " + "、".join(f"{name} {count}" for name, count in outcomes.items()))
+    recent = report.get("recent") or []
+    if recent:
+        print("- 最近职位:")
+        for job in recent:
+            outcome = job.get("final_action") or job.get("recommendation") or "unknown"
+            print(f"  {job.get('updated_at', '')[:19]}  {outcome:<22}  {job.get('company', '')} / {job.get('title', '')}")
+
+
+def show_report() -> None:
+    """Show the current run and seven-day outcomes, inspired by task history views."""
+    current = database.job_report(hours=24 * 7, run_id=runtime_state.run_id)
+    recent = database.job_report(hours=24 * 7)
+    _print_report(f"当前批次 {runtime_state.run_id}", current)
+    _print_report("最近 7 天", recent)
+
+
 def show_logs(limit: int = 30) -> None:
     logs = list(runtime_state.logs)[:limit]
     if not logs:
@@ -1137,6 +1162,7 @@ def show_help() -> None:
   stop          停止自动化
   actions       处理待确认动作
   history       显示最近历史
+  report        汇总当前批次与最近 7 天的职位处理结果
   logs          显示最近日志
   script        显示篡改猴脚本安装/更新地址
   doctor        检查依赖、Ollama 和油猴连接
@@ -1180,6 +1206,8 @@ def command_loop() -> None:
             handle_pending_actions_once()
         elif command == "history":
             show_history()
+        elif command == "report":
+            show_report()
         elif command == "logs":
             show_logs()
         elif command == "script":

@@ -416,6 +416,7 @@ async def control(payload: ControlUpdate):
 async def jobs_analyze(payload: JobAnalyzeRequest):
     cache.load()
     job = payload.model_dump()
+    job["run_id"] = runtime_state.run_id
     existing_job = database.get_job(job.get("url", ""))
     blocked_reason = job_filter_blocked_reason(job) or blocked_by_history(job, existing_job)
     final_action = "already_contacted" if job.get("talked") else ""

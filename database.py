@@ -42,11 +42,15 @@ def init_db() -> None:
                 resume_sent INTEGER DEFAULT 0,
                 hr_replied INTEGER DEFAULT 0,
                 error TEXT,
+                run_id TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
             """
         )
+        job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "run_id" not in job_columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN run_id TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS actions (
@@ -79,6 +83,7 @@ def init_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_company_greeted ON jobs(company, greeted)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_run_id ON jobs(run_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_status_created_at ON actions(status, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at)")
         conn.commit()
@@ -94,9 +99,9 @@ def upsert_job(job: dict[str, Any], analysis: dict[str, Any] | None = None, fina
             """
             INSERT INTO jobs (
                 url, title, company, salary, city, detail, analysis_json,
-                recommendation, final_action, created_at, updated_at
+                recommendation, final_action, run_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 title=excluded.title,
                 company=excluded.company,
@@ -106,6 +111,7 @@ def upsert_job(job: dict[str, Any], analysis: dict[str, Any] | None = None, fina
                 analysis_json=excluded.analysis_json,
                 recommendation=excluded.recommendation,
                 final_action=CASE WHEN excluded.final_action != '' THEN excluded.final_action ELSE jobs.final_action END,
+                run_id=excluded.run_id,
                 updated_at=excluded.updated_at
             """,
             (
@@ -118,6 +124,7 @@ def upsert_job(job: dict[str, Any], analysis: dict[str, Any] | None = None, fina
                 analysis_json,
                 (analysis or {}).get("recommendation", ""),
                 final_action,
+                job.get("run_id", ""),
                 current_time,
                 current_time,
             ),
@@ -284,6 +291,42 @@ def list_recent_processed_jobs(limit: int = 500, hours: int = 24) -> list[dict[s
             (cutoff, limit),
         ).fetchall()
     return [row_to_dict(row) for row in rows]
+
+
+def job_report(hours: int = 24 * 7, run_id: str = "") -> dict[str, Any]:
+    """Summarize stored job decisions for the CLI without requiring SQLite JSON support."""
+    init_db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, hours))).isoformat()
+    conditions = ["updated_at >= ?"]
+    values: list[Any] = [cutoff]
+    if run_id:
+        conditions.append("run_id = ?")
+        values.append(run_id)
+    where = " AND ".join(conditions)
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT title, company, recommendation, final_action, greeted, error, updated_at, run_id
+            FROM jobs WHERE {where} ORDER BY updated_at DESC
+            """,
+            values,
+        ).fetchall()
+    jobs = [row_to_dict(row) for row in rows]
+    outcomes: dict[str, int] = {}
+    for job in jobs:
+        outcome = str(job.get("final_action") or job.get("recommendation") or "unknown")
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    return {
+        "hours": hours,
+        "run_id": run_id,
+        "total": len(jobs),
+        "greeted": sum(1 for job in jobs if job.get("greeted")),
+        "recommended": sum(1 for job in jobs if job.get("recommendation") == "greet"),
+        "skipped": sum(1 for job in jobs if job.get("recommendation") == "skip"),
+        "errors": sum(1 for job in jobs if job.get("error")),
+        "outcomes": outcomes,
+        "recent": jobs[:5],
+    }
 
 
 def create_event(event: dict[str, Any]) -> dict[str, Any]:
