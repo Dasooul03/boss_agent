@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import unittest
+
+from config import Config
+from job_filters import blocked_reason, salary_range_k
+
+
+class JobFilterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.saved = Config.as_dict()
+        Config.apply({
+            **self.saved,
+            "job_filter_cities": [],
+            "job_filter_title_keywords": [],
+            "job_filter_blocked_companies": [],
+            "job_filter_salary_min_k": 0,
+            "job_filter_salary_max_k": 0,
+        })
+
+    def tearDown(self) -> None:
+        Config.apply(self.saved)
+
+    def test_extracts_boss_salary_range(self) -> None:
+        self.assertEqual(salary_range_k("15-30K·14薪"), (15.0, 30.0))
+        self.assertEqual(salary_range_k("20K"), (20.0, 20.0))
+        self.assertIsNone(salary_range_k("面议"))
+
+    def test_applies_city_title_company_and_salary_filters(self) -> None:
+        Config.apply({
+            **Config.as_dict(),
+            "job_filter_cities": ["上海"],
+            "job_filter_title_keywords": ["Python", "后端"],
+            "job_filter_blocked_companies": ["外包"],
+            "job_filter_salary_min_k": 20,
+            "job_filter_salary_max_k": 35,
+        })
+        valid = {"city": "上海", "title": "Python 后端工程师", "company": "示例科技", "salary": "25-35K"}
+        self.assertEqual(blocked_reason(valid), "")
+        self.assertIn("城市", blocked_reason({**valid, "city": "北京"}))
+        self.assertIn("职位名称", blocked_reason({**valid, "title": "产品经理"}))
+        self.assertIn("屏蔽", blocked_reason({**valid, "company": "某外包服务"}))
+        self.assertIn("低于", blocked_reason({**valid, "salary": "10-15K"}))
+        self.assertIn("高于", blocked_reason({**valid, "salary": "40-50K"}))
+
+    def test_unknown_salary_does_not_reject_job(self) -> None:
+        Config.apply({**Config.as_dict(), "job_filter_salary_min_k": 20})
+        self.assertEqual(blocked_reason({"salary": "面议"}), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

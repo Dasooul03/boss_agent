@@ -398,6 +398,74 @@ def edit_session_settings() -> None:
         print("[配置] 无效选择，已取消。")
 
 
+def _parse_csv_terms(value: str) -> list[str]:
+    """Normalize the comma-separated input used by the non-interactive CLI."""
+    terms: list[str] = []
+    for item in value.replace("，", ",").split(","):
+        text = item.strip()
+        if text and text not in terms:
+            terms.append(text)
+    return terms
+
+
+def _filter_list_text(key: str) -> str:
+    return "、".join(getattr(Config, key, []) or []) or "不限"
+
+
+def show_job_filters() -> None:
+    minimum = float(getattr(Config, "job_filter_salary_min_k", 0) or 0)
+    maximum = float(getattr(Config, "job_filter_salary_max_k", 0) or 0)
+    salary = "不限"
+    if minimum or maximum:
+        salary = f"{minimum:g}K - {maximum:g}K" if maximum else f"≥ {minimum:g}K"
+    print("\n[职位过滤] 在模型评分前执行；未提供薪资的职位不会仅因薪资条件被跳过。")
+    print(f"- 期望城市: {_filter_list_text('job_filter_cities')}")
+    print(f"- 职位关键词（命中任一）: {_filter_list_text('job_filter_title_keywords')}")
+    print(f"- 屏蔽公司（名称包含即跳过）: {_filter_list_text('job_filter_blocked_companies')}")
+    print(f"- 月薪范围（K）: {salary}")
+
+
+def edit_job_filters() -> None:
+    """Configure deterministic filters inspired by GeekGeekRun's job conditions."""
+    show_job_filters()
+    print("\n直接回车保留当前值；输入 - 清空对应列表或薪资上限。")
+    cities = ask("期望城市（逗号分隔）", ", ".join(getattr(Config, "job_filter_cities", [])))
+    titles = ask("职位关键词（逗号分隔，命中任一）", ", ".join(getattr(Config, "job_filter_title_keywords", [])))
+    companies = ask("屏蔽公司关键词（逗号分隔）", ", ".join(getattr(Config, "job_filter_blocked_companies", [])))
+    current_minimum = float(getattr(Config, "job_filter_salary_min_k", 0) or 0)
+    current_maximum = float(getattr(Config, "job_filter_salary_max_k", 0) or 0)
+    minimum_text = ask("期望最低月薪（K，0=不限）", f"{current_minimum:g}")
+    maximum_text = ask("期望最高月薪（K，0=不限）", f"{current_maximum:g}")
+
+    def list_value(raw: str, current: list[str]) -> list[str]:
+        if raw == "":
+            return current
+        return [] if raw == "-" else _parse_csv_terms(raw)
+
+    def number_value(raw: str, current: float) -> float:
+        if raw == "":
+            return current
+        if raw == "-":
+            return 0
+        try:
+            number = float(raw)
+        except ValueError:
+            print(f"[配置] 无效薪资 {raw!r}，已保留原值 {current:g}K")
+            return current
+        return max(0, number)
+
+    updates = {
+        "job_filter_cities": list_value(cities, list(getattr(Config, "job_filter_cities", []))),
+        "job_filter_title_keywords": list_value(titles, list(getattr(Config, "job_filter_title_keywords", []))),
+        "job_filter_blocked_companies": list_value(companies, list(getattr(Config, "job_filter_blocked_companies", []))),
+        "job_filter_salary_min_k": number_value(minimum_text, current_minimum),
+        "job_filter_salary_max_k": number_value(maximum_text, current_maximum),
+    }
+    Config.save(updates)
+    runtime_state.emit("job_filters_updated", "职位确定性过滤条件已更新", source="config", detail=updates)
+    show_job_filters()
+
+
 def edit_tags() -> None:
     """重新生成或手动编辑岗位搜索标签。"""
     from core import generate_tags
@@ -1060,6 +1128,7 @@ def show_help() -> None:
   resume        重新上传/编辑简历
   profile       重新生成/编辑用户画像
   session       修改本轮轮次设置（岗位标签 / 打招呼上限）
+  filters       配置城市、职位、公司和薪资的模型前过滤条件
   tags          重新生成/编辑岗位搜索标签
   greeting      重新生成/编辑打招呼用语
   start         开始或继续运行
@@ -1095,6 +1164,8 @@ def command_loop() -> None:
             print_status_panel()
         elif command == "session":
             edit_session_settings()
+        elif command in {"filters", "filter"}:
+            edit_job_filters()
         elif command == "tags":
             edit_tags()
         elif command == "greeting":

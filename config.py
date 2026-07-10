@@ -35,6 +35,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "session_greet_limit": 50,
     "max_contacts_per_company": 1,
     "skip_contacted_companies": True,
+    "job_filter_cities": [],
+    "job_filter_title_keywords": [],
+    "job_filter_blocked_companies": [],
+    "job_filter_salary_min_k": 0,
+    "job_filter_salary_max_k": 0,
     "job_detail_max_chars": 1600,
     "log_verbosity": "compact",
     "disable_model_thinking": True,
@@ -91,6 +96,17 @@ def _as_token_budget(value: Any, default: int, minimum: int, maximum: int) -> in
     if parsed == -1:
         return -1
     return max(minimum, min(maximum, parsed))
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _detect_external_model_profile(data: dict[str, Any]) -> str:
@@ -198,6 +214,16 @@ class Config:
         data["model_repeat_last_n"] = _as_int(data.get("model_repeat_last_n"), 128, 0, 4096)
         data["model_frequency_penalty"] = _as_float(data.get("model_frequency_penalty"), 0.3, 0.0, 2.0)
         data["model_presence_penalty"] = _as_float(data.get("model_presence_penalty"), 0.1, 0.0, 2.0)
+        data["job_filter_cities"] = _as_string_list(data.get("job_filter_cities"))
+        data["job_filter_title_keywords"] = _as_string_list(data.get("job_filter_title_keywords"))
+        data["job_filter_blocked_companies"] = _as_string_list(data.get("job_filter_blocked_companies"))
+        data["job_filter_salary_min_k"] = _as_float(data.get("job_filter_salary_min_k"), 0, 0.0, 1000.0)
+        data["job_filter_salary_max_k"] = _as_float(data.get("job_filter_salary_max_k"), 0, 0.0, 1000.0)
+        if data["job_filter_salary_max_k"] and data["job_filter_salary_min_k"] > data["job_filter_salary_max_k"]:
+            data["job_filter_salary_min_k"], data["job_filter_salary_max_k"] = (
+                data["job_filter_salary_max_k"],
+                data["job_filter_salary_min_k"],
+            )
         data["job_score_num_predict_think_off"] = _as_token_budget(
             data.get("job_score_num_predict_think_off"),
             DEFAULT_CONFIG["job_score_num_predict_think_off"],

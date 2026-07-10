@@ -28,6 +28,7 @@ import resume_service
 from cache import cache
 from config import BASE_DIR, Config
 from core import SCORING_VERSION, analyze_job
+from job_filters import blocked_reason as job_filter_blocked_reason
 from runtime_state import runtime_state
 from schema import (
     ActionCreate,
@@ -416,7 +417,7 @@ async def jobs_analyze(payload: JobAnalyzeRequest):
     cache.load()
     job = payload.model_dump()
     existing_job = database.get_job(job.get("url", ""))
-    blocked_reason = blocked_by_history(job, existing_job)
+    blocked_reason = job_filter_blocked_reason(job) or blocked_by_history(job, existing_job)
     final_action = "already_contacted" if job.get("talked") else ""
     if blocked_reason:
         analysis = {
