@@ -38,6 +38,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "job_filter_cities": [],
     "job_filter_title_keywords": [],
     "job_filter_blocked_companies": [],
+    "job_filter_employment_type": "any",
     "job_filter_salary_min_k": 0,
     "job_filter_salary_max_k": 0,
     "job_detail_max_chars": 1600,
@@ -217,6 +218,8 @@ class Config:
         data["job_filter_cities"] = _as_string_list(data.get("job_filter_cities"))
         data["job_filter_title_keywords"] = _as_string_list(data.get("job_filter_title_keywords"))
         data["job_filter_blocked_companies"] = _as_string_list(data.get("job_filter_blocked_companies"))
+        if data.get("job_filter_employment_type") not in {"any", "full_time", "internship"}:
+            data["job_filter_employment_type"] = "any"
         data["job_filter_salary_min_k"] = _as_float(data.get("job_filter_salary_min_k"), 0, 0.0, 1000.0)
         data["job_filter_salary_max_k"] = _as_float(data.get("job_filter_salary_max_k"), 0, 0.0, 1000.0)
         if data["job_filter_salary_max_k"] and data["job_filter_salary_min_k"] > data["job_filter_salary_max_k"]:

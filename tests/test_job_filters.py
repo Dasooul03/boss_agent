@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from config import Config
-from job_filters import blocked_reason, salary_range_k
+from job_filters import blocked_reason, is_internship, salary_range_k
 
 
 class JobFilterTests(unittest.TestCase):
@@ -14,6 +14,7 @@ class JobFilterTests(unittest.TestCase):
             "job_filter_cities": [],
             "job_filter_title_keywords": [],
             "job_filter_blocked_companies": [],
+            "job_filter_employment_type": "any",
             "job_filter_salary_min_k": 0,
             "job_filter_salary_max_k": 0,
         })
@@ -46,6 +47,20 @@ class JobFilterTests(unittest.TestCase):
     def test_unknown_salary_does_not_reject_job(self) -> None:
         Config.apply({**Config.as_dict(), "job_filter_salary_min_k": 20})
         self.assertEqual(blocked_reason({"salary": "面议"}), "")
+
+    def test_filters_internship_and_full_time_jobs(self) -> None:
+        internship = {"title": "Python 实习生", "detail": "暑期 internship"}
+        formal = {"title": "Python 工程师", "detail": "全职岗位"}
+        self.assertTrue(is_internship(internship))
+        self.assertFalse(is_internship(formal))
+
+        Config.apply({**Config.as_dict(), "job_filter_employment_type": "internship"})
+        self.assertEqual(blocked_reason(internship), "")
+        self.assertIn("实习", blocked_reason(formal))
+
+        Config.apply({**Config.as_dict(), "job_filter_employment_type": "full_time"})
+        self.assertEqual(blocked_reason(formal), "")
+        self.assertIn("正式", blocked_reason(internship))
 
 
 if __name__ == "__main__":

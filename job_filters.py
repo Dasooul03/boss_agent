@@ -40,8 +40,21 @@ def salary_range_k(salary: str) -> tuple[float, float] | None:
     return min(low, high), max(low, high)
 
 
+def is_internship(job: dict[str, Any]) -> bool:
+    """Recognize common internship labels from the job information available to us."""
+    text = f"{job.get('title', '')}\n{job.get('detail', '')}".casefold()
+    return bool(re.search(r"实习|intern(?:ship)?|trainee", text, flags=re.IGNORECASE))
+
+
 def blocked_reason(job: dict[str, Any]) -> str:
     """Return a user-facing skip reason, or an empty string when the job passes."""
+    employment_type = str(getattr(Config, "job_filter_employment_type", "any"))
+    internship = is_internship(job)
+    if employment_type == "internship" and not internship:
+        return "仅筛选实习岗位，当前职位未标记为实习"
+    if employment_type == "full_time" and internship:
+        return "仅筛选正式岗位，当前职位标记为实习"
+
     cities = _normalized_terms(getattr(Config, "job_filter_cities", []))
     if cities and not _matches_any(str(job.get("city", "")), cities):
         return f"城市不在期望范围: {job.get('city') or '未知'}"

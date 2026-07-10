@@ -419,6 +419,9 @@ def show_job_filters() -> None:
     if minimum or maximum:
         salary = f"{minimum:g}K - {maximum:g}K" if maximum else f"≥ {minimum:g}K"
     print("\n[职位过滤] 在模型评分前执行；未提供薪资的职位不会仅因薪资条件被跳过。")
+    employment_labels = {"any": "不限", "full_time": "仅正式岗位", "internship": "仅实习岗位"}
+    employment_type = str(getattr(Config, "job_filter_employment_type", "any"))
+    print(f"- 岗位类型: {employment_labels.get(employment_type, '不限')}")
     print(f"- 期望城市: {_filter_list_text('job_filter_cities')}")
     print(f"- 职位关键词（命中任一）: {_filter_list_text('job_filter_title_keywords')}")
     print(f"- 屏蔽公司（名称包含即跳过）: {_filter_list_text('job_filter_blocked_companies')}")
@@ -432,6 +435,8 @@ def edit_job_filters() -> None:
     cities = ask("期望城市（逗号分隔）", ", ".join(getattr(Config, "job_filter_cities", [])))
     titles = ask("职位关键词（逗号分隔，命中任一）", ", ".join(getattr(Config, "job_filter_title_keywords", [])))
     companies = ask("屏蔽公司关键词（逗号分隔）", ", ".join(getattr(Config, "job_filter_blocked_companies", [])))
+    current_employment_type = str(getattr(Config, "job_filter_employment_type", "any"))
+    employment_type = ask("岗位类型 any=不限 / full_time=正式 / internship=实习", current_employment_type)
     current_minimum = float(getattr(Config, "job_filter_salary_min_k", 0) or 0)
     current_maximum = float(getattr(Config, "job_filter_salary_max_k", 0) or 0)
     minimum_text = ask("期望最低月薪（K，0=不限）", f"{current_minimum:g}")
@@ -454,10 +459,25 @@ def edit_job_filters() -> None:
             return current
         return max(0, number)
 
+    def employment_value(raw: str, current: str) -> str:
+        if raw == "":
+            return current
+        aliases = {
+            "any": "any", "0": "any", "不限": "any",
+            "full_time": "full_time", "full-time": "full_time", "1": "full_time", "正式": "full_time",
+            "internship": "internship", "intern": "internship", "2": "internship", "实习": "internship",
+        }
+        selected = aliases.get(raw.strip().lower())
+        if selected:
+            return selected
+        print(f"[配置] 无效岗位类型 {raw!r}，已保留原值 {current}。")
+        return current
+
     updates = {
         "job_filter_cities": list_value(cities, list(getattr(Config, "job_filter_cities", []))),
         "job_filter_title_keywords": list_value(titles, list(getattr(Config, "job_filter_title_keywords", []))),
         "job_filter_blocked_companies": list_value(companies, list(getattr(Config, "job_filter_blocked_companies", []))),
+        "job_filter_employment_type": employment_value(employment_type, current_employment_type),
         "job_filter_salary_min_k": number_value(minimum_text, current_minimum),
         "job_filter_salary_max_k": number_value(maximum_text, current_maximum),
     }
