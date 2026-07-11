@@ -17,7 +17,7 @@ from typing import Any
 try:
     from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+    from fastapi.responses import JSONResponse, PlainTextResponse
 except ModuleNotFoundError as exc:
     print("[错误] 缺少 Python 依赖，请先运行: pip install -r requirements.txt", file=sys.stderr)
     raise SystemExit(1) from exc
@@ -26,7 +26,7 @@ import database
 import greeting_service
 import resume_service
 from cache import cache
-from config import BASE_DIR, RESOURCE_DIR, Config
+from config import BASE_DIR, Config
 from core import SCORING_VERSION, analyze_job
 from job_filters import blocked_reason as job_filter_blocked_reason
 from runtime_state import runtime_state
@@ -39,13 +39,13 @@ from schema import (
     GreetingGenerateRequest,
     GreetingUpdate,
     JobAnalyzeRequest,
-    ProfileUpdate,
     ResumeUpdate,
     ScriptHeartbeat,
 )
 from tools import script_connect_hosts
 
-WEB_SCRIPT_PATH = RESOURCE_DIR / "web_script.js"
+BASE_DIR = Path(__file__).resolve().parent
+WEB_SCRIPT_PATH = BASE_DIR / "web_script.js"
 MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bossagent-model")
 MODEL_EXECUTOR_SHUTDOWN = False
 ALLOW_REMOTE_API_ENV = "BOSS_AGENT_ALLOW_REMOTE"
@@ -241,16 +241,14 @@ def render_userscript() -> str:
     return "\n".join(rendered_lines) + ("\n" if script.endswith("\n") else "")
 
 
-def render_dashboard() -> str:
-    dashboard_path = RESOURCE_DIR / "dashboard.html"
-    if not dashboard_path.exists():
-        fail("dashboard.html 不存在", 404)
-    return dashboard_path.read_text(encoding="utf-8")
-
-
 @app.get("/")
 async def index():
-    return HTMLResponse(render_dashboard())
+    return {
+        "message": "BossAgent CLI API is running",
+        "health": "/health",
+        "status": "/status",
+        "userscript": "/web_script.user.js",
+    }
 
 
 @app.get("/health", summary="轻量存活检查")
@@ -377,16 +375,6 @@ async def get_resume_profile():
         "user_detail": cache.user_detail,
         "status": cache.cache_status(),
     }
-
-
-@app.put("/resume/profile", summary="保存简历画像和搜索标签")
-async def put_resume_profile(payload: ProfileUpdate):
-    if payload.tags:
-        cache.save_tags("\n".join(payload.tags))
-    if payload.user_detail.strip():
-        cache.save_user_detail(payload.user_detail)
-    cache.load()
-    return {"tags": cache.tags, "user_detail": cache.user_detail, "status": cache.cache_status()}
 
 
 @app.post("/greeting/generate", summary="生成打招呼草稿")
@@ -603,42 +591,14 @@ def run_api_only() -> int:
     return 0
 
 
-def run_gui() -> int:
-    """Run the native desktop UI while keeping the local API for Tampermonkey."""
-    from desktop_gui import run_desktop
-
-    return run_desktop(app, shutdown_callback=shutdown_model_executor)
-
-
-def print_usage() -> None:
-    print(
-        "BossAgent 启动模式:\n"
-        "  python main.py gui      图形化控制台（面向人工操作）\n"
-        "  python main.py cli      CLI 控制台（面向 agent / 终端操作）\n"
-        "  python main.py autorun  使用已有配置自动运行\n"
-        "  python main.py serve    仅启动本地 API"
-    )
-
-
 if __name__ == "__main__":
-    mode = sys.argv[1].strip().lower() if len(sys.argv) > 1 else ""
-    if mode in {"-h", "--help", "help", ""}:
-        print_usage()
-        raise SystemExit(0)
-    if mode == "serve":
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
         raise SystemExit(run_api_only())
-    if mode == "gui":
-        raise SystemExit(run_gui())
-    if mode in {"agent", "mcp"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"agent", "mcp"}:
         print("[BossAgent] 当前版本不再提供 agent/MCP 入口。请使用 start_boss_agent_auto.bat 自动运行，或使用 start_boss_agent.bat 人工配置。")
         raise SystemExit(2)
     from cli_console import run_autorun, run_cli
 
-    if mode == "autorun":
+    if len(sys.argv) > 1 and sys.argv[1] == "autorun":
         raise SystemExit(run_autorun(app, shutdown_callback=shutdown_model_executor))
-    if mode == "cli":
-        run_cli(app, shutdown_callback=shutdown_model_executor)
-        raise SystemExit(0)
-    print(f"[BossAgent] 未知启动模式: {mode}\n")
-    print_usage()
-    raise SystemExit(2)
+    run_cli(app, shutdown_callback=shutdown_model_executor)

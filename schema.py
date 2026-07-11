@@ -31,11 +31,6 @@ class ResumeUpdate(BaseModel):
     markdown: str
 
 
-class ProfileUpdate(BaseModel):
-    tags: list[str] = Field(default_factory=list)
-    user_detail: str = ""
-
-
 class GreetingUpdate(BaseModel):
     content: str
     name: str = "默认话术"

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BossAgent
 // @namespace    http://tampermonkey.net/
-// @version      2026.07.11.2
+// @version      2026.07.07.1
 // @description  BossAgent Tampermonkey userscript for BOSS Zhipin
 // @author       Dasooul
 // @match        https://www.zhipin.com/*
@@ -21,7 +21,7 @@
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.07.11-native-ui.1',
+        scriptVersion: '2026.06-cli-autogreet.23',
         greetMaxAttempts: 3,
         greetRetryDelays: [0, 3000, 8000],
         resumeIndex: 0, // 第几份简历，从 0 开始递增
@@ -1577,7 +1577,7 @@
                 const previousControl = lastBackendControl;
                 lastBackendControl = res.control || lastBackendControl;
                 if (res.offline) {
-                    noteBackendOffline('后端未连接：请确认 BossAgent.exe 或本地服务正在运行，并更新油猴脚本权限');
+                    noteBackendOffline('后端未连接：请确认 python main.py 正在运行，端口为 33333，并重新保存油猴脚本权限');
                     logger.setPaused(true);
                     this.pause = true;
                     return false;
@@ -2696,7 +2696,7 @@
                 lastBackendRunId = res.run_id || lastBackendRunId;
                 lastBackendControl = res.control || lastBackendControl;
                 if (res.offline) {
-                    noteBackendOffline('后端未连接：请先启动 BossAgent.exe，并确认油猴脚本允许连接 127.0.0.1');
+                    noteBackendOffline('后端未连接：请先运行 python main.py，并确认油猴脚本允许连接 127.0.0.1');
                     return;
                 }
                 noteBackendOnline();

@@ -207,12 +207,12 @@ if ($provider -eq "openai" -and $openaiKey) {
 }
 
 if ($provider -eq "openai" -and -not $openaiKey) {
-    Write-Warn "Provider is OpenAI, but API Key is missing. Configure it in the dashboard."
+    Write-Warn "Provider is OpenAI, but API Key is missing. Run config in the CLI."
 }
 
-Write-Info "Starting BossAgent dashboard..."
+Write-Info "Starting BossAgent CLI..."
 $mainPy = Join-Path $ProjectRoot "main.py"
-& $pythonExe $mainPy gui
+& $pythonExe $mainPy
 $exitCode = $LASTEXITCODE
 
 if ($exitCode -ne 0) {

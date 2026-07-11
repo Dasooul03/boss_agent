@@ -1,6 +1,6 @@
 # BossAgent
 
-BOSS 直聘自动化投递助手。Python 后端 + 本地图形化控制台 + Agent CLI + Tampermonkey 脚本，自动分析岗位、模型评分、打招呼，**自动发送简历图片**。
+BOSS 直聘自动化投递助手。Python 后端 + CLI 控制台 + Tampermonkey 脚本，自动分析岗位、模型评分、打招呼，**自动发送简历图片**。
 
 ---
 
@@ -27,19 +27,13 @@ BOSS 直聘自动化投递助手。Python 后端 + 本地图形化控制台 + Ag
 
 #### 运行方式
 
-### 图形化控制台（推荐给人工操作）
+**人工模式**（首次配置用）：
 
 ```text
-python main.py gui
+start_boss_agent.bat
 ```
 
-会打开原生 Windows 桌面窗口。可以在界面中配置简历、筛选、话术、黄金时段，并控制开始、暂停和停止；浏览器仅用于 BOSS 页面和油猴脚本安装。
-
-### CLI 模式（给 agent / 终端自动化）
-
-```text
-python main.py cli
-```
+或在项目目录运行 `python main.py`。
 
 **自动模式**（后续运行用）：
 
