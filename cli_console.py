@@ -519,11 +519,19 @@ def prepare_session_start(force: bool = False) -> bool:
         return True
 
     cache.load()
+    if not cache.resume.strip():
+        print("[配置] 当前没有简历，无法启动自动化。请先使用 resume 命令。")
+        runtime_state.emit("session_prepare_failed", "缺少简历，本轮未启动", source="config", level="error")
+        return False
+    if not cache.user_detail.strip():
+        print("[配置] 缺少用户画像，无法启动自动化。请先使用 profile 命令。")
+        runtime_state.emit("session_prepare_failed", "缺少用户画像，本轮未启动", source="config", level="error")
+        return False
+    if not greeting_service.get_greeting().get("confirmed"):
+        print("[配置] 缺少已确认的打招呼话术，无法启动自动化。请先使用 greeting 命令。")
+        runtime_state.emit("session_prepare_failed", "缺少已确认话术，本轮未启动", source="config", level="error")
+        return False
     if not cache.tags:
-        if not cache.resume.strip():
-            print("[配置] 当前没有简历，无法生成本轮岗位标签。")
-            runtime_state.emit("session_prepare_failed", "当前没有简历，无法生成本轮岗位标签", source="config", level="error")
-            return False
         from core import generate_tags
 
         try:

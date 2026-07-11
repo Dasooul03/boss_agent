@@ -10,7 +10,6 @@ import time
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,7 @@ import resume_service
 from cache import cache
 from config import BASE_DIR, Config
 from core import SCORING_VERSION, analyze_job
-from job_filters import blocked_reason as job_filter_blocked_reason
+from decision_service import evaluate_preflight
 from runtime_state import runtime_state
 from schema import (
     ActionCreate,
@@ -419,9 +418,10 @@ async def jobs_analyze(payload: JobAnalyzeRequest):
     job["run_id"] = runtime_state.run_id
     job["target_roles"] = list(getattr(Config, "job_filter_target_roles", []))
     existing_job = database.get_job(job.get("url", ""))
-    blocked_reason = job_filter_blocked_reason(job) or blocked_by_history(job, existing_job)
-    final_action = "already_contacted" if job.get("talked") else ""
-    if blocked_reason:
+    preflight = evaluate_preflight(job, existing_job)
+    final_action = preflight.final_action if preflight else ""
+    if preflight:
+        blocked_reason = preflight.reason
         analysis = {
             "total_score": 0,
             "skill_score": 0,
@@ -433,7 +433,7 @@ async def jobs_analyze(payload: JobAnalyzeRequest):
             "risks": [blocked_reason],
             "recommendation": "skip",
             "greeting": "",
-            "decision_source": "history_or_config",
+            "decision_source": preflight.source,
             "match_reason": blocked_reason,
             "blocked_reason": blocked_reason,
         }
@@ -461,7 +461,7 @@ async def jobs_analyze(payload: JobAnalyzeRequest):
         if analysis.get("total_score", 0) <= 0 and analysis.get("risks"):
             final_action = final_action or "model_failed_skip"
     saved_job = database.upsert_job(job, analysis, final_action=final_action)
-    if job.get("talked"):
+    if final_action == "already_contacted":
         saved_job = database.update_job_status(job.get("url", ""), final_action="already_contacted", greeted=True) or saved_job
     runtime_state.emit(
         "job_analyzed",
@@ -532,33 +532,6 @@ async def get_introduce():
     return {"introduce": greeting["active_content"] if greeting.get("confirmed") else ""}
 
 
-def blocked_by_history(job: dict[str, Any], existing_job: dict[str, Any] | None) -> str:
-    if not Config.skip_contacted_companies:
-        return ""
-    if job.get("talked"):
-        return job.get("talked_reason") or "页面显示该职位已沟通，跳过重复联系"
-    if existing_job and existing_job.get("greeted"):
-        return "该职位已打过招呼，跳过重复联系"
-    if existing_job and recently_processed(existing_job):
-        action = existing_job.get("final_action") or existing_job.get("recommendation") or "已处理"
-        return f"该职位近期已处理，跳过重复打开: {action}"
-    company = job.get("company", "")
-    if company and database.count_greeted_company(company) >= int(Config.max_contacts_per_company):
-        return f"公司已达到联系上限: {company}"
-    return ""
-
-
-def recently_processed(job: dict[str, Any], hours: int = 24) -> bool:
-    updated_at = job.get("updated_at")
-    if not updated_at:
-        return False
-    try:
-        age_seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(updated_at)).total_seconds()
-    except (TypeError, ValueError):
-        return False
-    if age_seconds > hours * 3600:
-        return False
-    return bool(job.get("recommendation") or job.get("final_action") or job.get("error"))
 
 
 def run_api_only() -> int:
