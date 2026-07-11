@@ -17,7 +17,7 @@ from typing import Any
 try:
     from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, PlainTextResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 except ModuleNotFoundError as exc:
     print("[错误] 缺少 Python 依赖，请先运行: pip install -r requirements.txt", file=sys.stderr)
     raise SystemExit(1) from exc
@@ -39,6 +39,7 @@ from schema import (
     GreetingGenerateRequest,
     GreetingUpdate,
     JobAnalyzeRequest,
+    ProfileUpdate,
     ResumeUpdate,
     ScriptHeartbeat,
 )
@@ -241,14 +242,16 @@ def render_userscript() -> str:
     return "\n".join(rendered_lines) + ("\n" if script.endswith("\n") else "")
 
 
+def render_dashboard() -> str:
+    dashboard_path = BASE_DIR / "dashboard.html"
+    if not dashboard_path.exists():
+        fail("dashboard.html 不存在", 404)
+    return dashboard_path.read_text(encoding="utf-8")
+
+
 @app.get("/")
 async def index():
-    return {
-        "message": "BossAgent CLI API is running",
-        "health": "/health",
-        "status": "/status",
-        "userscript": "/web_script.user.js",
-    }
+    return HTMLResponse(render_dashboard())
 
 
 @app.get("/health", summary="轻量存活检查")
@@ -375,6 +378,16 @@ async def get_resume_profile():
         "user_detail": cache.user_detail,
         "status": cache.cache_status(),
     }
+
+
+@app.put("/resume/profile", summary="保存简历画像和搜索标签")
+async def put_resume_profile(payload: ProfileUpdate):
+    if payload.tags:
+        cache.save_tags("\n".join(payload.tags))
+    if payload.user_detail.strip():
+        cache.save_user_detail(payload.user_detail)
+    cache.load()
+    return {"tags": cache.tags, "user_detail": cache.user_detail, "status": cache.cache_status()}
 
 
 @app.post("/greeting/generate", summary="生成打招呼草稿")
@@ -591,9 +604,25 @@ def run_api_only() -> int:
     return 0
 
 
+def run_gui() -> int:
+    """Run the local API and open the human-facing dashboard once it is ready."""
+    try:
+        import uvicorn
+        import webbrowser
+    except ModuleNotFoundError:
+        return run_api_only()
+    Config.load()
+    url = f"http://{Config.server_host}:{Config.server_port}/"
+    threading.Timer(0.8, lambda: webbrowser.open(url, new=2)).start()
+    uvicorn.run(app, host=Config.server_host, port=int(Config.server_port), log_level="info")
+    return 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         raise SystemExit(run_api_only())
+    if len(sys.argv) > 1 and sys.argv[1] == "gui":
+        raise SystemExit(run_gui())
     if len(sys.argv) > 1 and sys.argv[1] in {"agent", "mcp"}:
         print("[BossAgent] 当前版本不再提供 agent/MCP 入口。请使用 start_boss_agent_auto.bat 自动运行，或使用 start_boss_agent.bat 人工配置。")
         raise SystemExit(2)
