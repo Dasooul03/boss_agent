@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any
 
 
-BASE_DIR = Path(__file__).resolve().parent
+# Frozen builds keep user data alongside the executable while bundled assets are
+# unpacked to PyInstaller's temporary resource directory.
+BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
 DATA_DIR = BASE_DIR / "data"
 RESUME_DIR = DATA_DIR / "resume"
 CACHE_DIR = DATA_DIR / "cache"

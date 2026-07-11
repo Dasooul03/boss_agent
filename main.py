@@ -26,7 +26,7 @@ import database
 import greeting_service
 import resume_service
 from cache import cache
-from config import BASE_DIR, Config
+from config import BASE_DIR, RESOURCE_DIR, Config
 from core import SCORING_VERSION, analyze_job
 from job_filters import blocked_reason as job_filter_blocked_reason
 from runtime_state import runtime_state
@@ -45,8 +45,7 @@ from schema import (
 )
 from tools import script_connect_hosts
 
-BASE_DIR = Path(__file__).resolve().parent
-WEB_SCRIPT_PATH = BASE_DIR / "web_script.js"
+WEB_SCRIPT_PATH = RESOURCE_DIR / "web_script.js"
 MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bossagent-model")
 MODEL_EXECUTOR_SHUTDOWN = False
 ALLOW_REMOTE_API_ENV = "BOSS_AGENT_ALLOW_REMOTE"
@@ -243,7 +242,7 @@ def render_userscript() -> str:
 
 
 def render_dashboard() -> str:
-    dashboard_path = BASE_DIR / "dashboard.html"
+    dashboard_path = RESOURCE_DIR / "dashboard.html"
     if not dashboard_path.exists():
         fail("dashboard.html 不存在", 404)
     return dashboard_path.read_text(encoding="utf-8")
@@ -614,7 +613,9 @@ def run_gui() -> int:
     Config.load()
     url = f"http://{Config.server_host}:{Config.server_port}/"
     threading.Timer(0.8, lambda: webbrowser.open(url, new=2)).start()
-    uvicorn.run(app, host=Config.server_host, port=int(Config.server_port), log_level="info")
+    # A windowless PyInstaller executable has no console stream, so avoid
+    # Uvicorn's colour-aware console logging configuration.
+    uvicorn.run(app, host=Config.server_host, port=int(Config.server_port), log_config=None, access_log=False)
     return 0
 
 
