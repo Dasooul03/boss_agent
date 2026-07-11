@@ -489,27 +489,6 @@ def edit_job_filters() -> None:
     show_job_filters()
 
 
-def edit_speed_profile() -> None:
-    print("\n[运行节奏] 高效档：工作日 09:00-11:00、14:00-16:00 自动运行；每轮最多 100 份；操作等待 0.9 秒。")
-    print("[1] 启用高效档")
-    print("[2] 使用自定义上限和等待时间")
-    print("[3] 关闭时段限制（保留当前上限和等待时间）")
-    choice = input("  选择 [Enter 取消]: ").strip()
-    if choice == "1":
-        updates = {"session_greet_limit": 100, "action_delay_ms": 900, "run_schedule_enabled": True}
-    elif choice == "2":
-        limit = ask_int("本轮最多打招呼数量", int(Config.session_greet_limit))
-        delay = ask_int("每次操作基础等待（毫秒，500-5000）", int(getattr(Config, "action_delay_ms", 900)))
-        updates = {"session_greet_limit": max(1, min(200, limit)), "action_delay_ms": max(500, min(5000, delay)), "run_schedule_enabled": ask_bool("仅在工作日黄金时段运行", bool(getattr(Config, "run_schedule_enabled", False)))}
-    elif choice == "3":
-        updates = {"run_schedule_enabled": False}
-    else:
-        return
-    Config.save(updates)
-    runtime_state.emit("speed_profile_updated", "运行节奏已更新", source="config", detail=updates)
-    print(f"[运行节奏] 上限 {Config.session_greet_limit} / 等待 {Config.action_delay_ms}ms / 黄金时段 {'开启' if Config.run_schedule_enabled else '关闭'}")
-
-
 def edit_tags() -> None:
     """重新生成或手动编辑岗位搜索标签。"""
     from core import generate_tags
@@ -1199,7 +1178,6 @@ def show_help() -> None:
   profile       重新生成/编辑用户画像
   session       修改本轮轮次设置（岗位标签 / 打招呼上限）
   filters       配置城市、职位、公司和薪资的模型前过滤条件
-  speed         配置高效投递档、日上限与黄金时段
   tags          重新生成/编辑岗位搜索标签
   greeting      重新生成/编辑打招呼用语
   start         开始或继续运行
@@ -1257,8 +1235,6 @@ def command_loop() -> None:
             edit_session_settings()
         elif command in {"filters", "filter"}:
             edit_job_filters()
-        elif command == "speed":
-            edit_speed_profile()
         elif command == "tags":
             edit_tags()
         elif command == "greeting":

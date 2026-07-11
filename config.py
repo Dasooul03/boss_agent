@@ -32,9 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "openai_api_key": "",
     "think_model": "qwen3:1.7b",
     "score_threshold": 70,
-    "session_greet_limit": 100,
-    "action_delay_ms": 900,
-    "run_schedule_enabled": False,
+    "session_greet_limit": 50,
     "max_contacts_per_company": 1,
     "skip_contacted_companies": True,
     "job_filter_cities": [],
@@ -225,9 +223,6 @@ class Config:
         if data.get("job_filter_employment_type") not in {"any", "full_time", "internship"}:
             data["job_filter_employment_type"] = "any"
         data["job_filter_salary_min_k"] = _as_float(data.get("job_filter_salary_min_k"), 0, 0.0, 1000.0)
-        data["action_delay_ms"] = _as_int(data.get("action_delay_ms"), 900, 500, 5000)
-        data["session_greet_limit"] = _as_int(data.get("session_greet_limit"), 100, 1, 200)
-        data["run_schedule_enabled"] = _as_bool(data.get("run_schedule_enabled"))
         data["job_filter_salary_max_k"] = _as_float(data.get("job_filter_salary_max_k"), 0, 0.0, 1000.0)
         if data["job_filter_salary_max_k"] and data["job_filter_salary_min_k"] > data["job_filter_salary_max_k"]:
             data["job_filter_salary_min_k"], data["job_filter_salary_max_k"] = (

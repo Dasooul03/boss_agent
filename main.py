@@ -207,19 +207,6 @@ def script_base_url() -> str:
     return f"http://{Config.server_host}:{Config.server_port}"
 
 
-def run_schedule_status(now: datetime | None = None) -> dict[str, Any]:
-    """Evaluate the user-selected weekday delivery windows in local time."""
-    enabled = bool(getattr(Config, "run_schedule_enabled", False))
-    current = now or datetime.now()
-    minute = current.hour * 60 + current.minute
-    allowed = current.weekday() < 5 and (9 * 60 <= minute < 11 * 60 or 14 * 60 <= minute < 16 * 60)
-    return {
-        "enabled": enabled,
-        "allowed": allowed if enabled else True,
-        "message": "仅在工作日 09:00-11:00、14:00-16:00 自动运行" if enabled and not allowed else "",
-    }
-
-
 def render_userscript() -> str:
     if not WEB_SCRIPT_PATH.exists():
         fail("web_script.js 不存在", 404)
@@ -415,12 +402,6 @@ async def script_heartbeat(payload: ScriptHeartbeat):
     if payload.status == "error":
         runtime_state.log(payload.current_action or "脚本上报错误", level="error", source="script")
     payload = runtime_state.control_payload()
-    schedule = run_schedule_status()
-    payload["schedule"] = schedule
-    if schedule["enabled"] and not schedule["allowed"] and payload["control"] == "running":
-        payload["should_pause"] = True
-        payload["should_start"] = False
-        payload["message"] = schedule["message"]
     payload.update({"ok": True, "config": Config.public_dict()})
     return payload
 
