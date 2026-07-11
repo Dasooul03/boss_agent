@@ -424,6 +424,7 @@ def show_job_filters() -> None:
     print(f"- 岗位类型: {employment_labels.get(employment_type, '不限')}")
     print(f"- 期望城市: {_filter_list_text('job_filter_cities')}")
     print(f"- 职位关键词（命中任一）: {_filter_list_text('job_filter_title_keywords')}")
+    print(f"- 标题硬关键词（命中任一）: {_filter_list_text('job_filter_required_title_keywords')}")
     print(f"- 屏蔽公司（名称包含即跳过）: {_filter_list_text('job_filter_blocked_companies')}")
     print(f"- 月薪范围（K）: {salary}")
 
@@ -434,6 +435,7 @@ def edit_job_filters() -> None:
     print("\n直接回车保留当前值；输入 - 清空对应列表或薪资上限。")
     cities = ask("期望城市（逗号分隔）", ", ".join(getattr(Config, "job_filter_cities", [])))
     titles = ask("职位关键词（逗号分隔，命中任一）", ", ".join(getattr(Config, "job_filter_title_keywords", [])))
+    required_titles = ask("标题硬关键词（逗号分隔，例如 Agent开发）", ", ".join(getattr(Config, "job_filter_required_title_keywords", [])))
     companies = ask("屏蔽公司关键词（逗号分隔）", ", ".join(getattr(Config, "job_filter_blocked_companies", [])))
     current_employment_type = str(getattr(Config, "job_filter_employment_type", "any"))
     employment_type = ask("岗位类型 any=不限 / full_time=正式 / internship=实习", current_employment_type)
@@ -476,6 +478,7 @@ def edit_job_filters() -> None:
     updates = {
         "job_filter_cities": list_value(cities, list(getattr(Config, "job_filter_cities", []))),
         "job_filter_title_keywords": list_value(titles, list(getattr(Config, "job_filter_title_keywords", []))),
+        "job_filter_required_title_keywords": list_value(required_titles, list(getattr(Config, "job_filter_required_title_keywords", []))),
         "job_filter_blocked_companies": list_value(companies, list(getattr(Config, "job_filter_blocked_companies", []))),
         "job_filter_employment_type": employment_value(employment_type, current_employment_type),
         "job_filter_salary_min_k": number_value(minimum_text, current_minimum),
@@ -484,6 +487,27 @@ def edit_job_filters() -> None:
     Config.save(updates)
     runtime_state.emit("job_filters_updated", "职位确定性过滤条件已更新", source="config", detail=updates)
     show_job_filters()
+
+
+def edit_speed_profile() -> None:
+    print("\n[运行节奏] 高效档：工作日 09:00-11:00、14:00-16:00 自动运行；每轮最多 150 份；操作等待 0.9 秒。")
+    print("[1] 启用高效档")
+    print("[2] 使用自定义上限和等待时间")
+    print("[3] 关闭时段限制（保留当前上限和等待时间）")
+    choice = input("  选择 [Enter 取消]: ").strip()
+    if choice == "1":
+        updates = {"session_greet_limit": 150, "action_delay_ms": 900, "run_schedule_enabled": True}
+    elif choice == "2":
+        limit = ask_int("本轮最多打招呼数量", int(Config.session_greet_limit))
+        delay = ask_int("每次操作基础等待（毫秒，500-5000）", int(getattr(Config, "action_delay_ms", 900)))
+        updates = {"session_greet_limit": max(1, min(300, limit)), "action_delay_ms": max(500, min(5000, delay)), "run_schedule_enabled": ask_bool("仅在工作日黄金时段运行", bool(getattr(Config, "run_schedule_enabled", False)))}
+    elif choice == "3":
+        updates = {"run_schedule_enabled": False}
+    else:
+        return
+    Config.save(updates)
+    runtime_state.emit("speed_profile_updated", "运行节奏已更新", source="config", detail=updates)
+    print(f"[运行节奏] 上限 {Config.session_greet_limit} / 等待 {Config.action_delay_ms}ms / 黄金时段 {'开启' if Config.run_schedule_enabled else '关闭'}")
 
 
 def edit_tags() -> None:
@@ -1175,6 +1199,7 @@ def show_help() -> None:
   profile       重新生成/编辑用户画像
   session       修改本轮轮次设置（岗位标签 / 打招呼上限）
   filters       配置城市、职位、公司和薪资的模型前过滤条件
+  speed         配置高效投递档、日上限与黄金时段
   tags          重新生成/编辑岗位搜索标签
   greeting      重新生成/编辑打招呼用语
   start         开始或继续运行
@@ -1232,6 +1257,8 @@ def command_loop() -> None:
             edit_session_settings()
         elif command in {"filters", "filter"}:
             edit_job_filters()
+        elif command == "speed":
+            edit_speed_profile()
         elif command == "tags":
             edit_tags()
         elif command == "greeting":

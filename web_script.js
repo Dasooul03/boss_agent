@@ -31,8 +31,8 @@
         jobInfoResponseTimeout: 90000, // 详情页回传职位信息的最长等待时间
         onlyGreet: true, // 仅辅助打招呼，不自动扫描普通聊天页
         sendMode: 'text', // text=发话术, image=发简历图片
-        sessionGreetLimit: 50,
-        actionDelayMs: 2500,
+        sessionGreetLimit: 150,
+        actionDelayMs: 900,
         manualInterventionMaxRetries: 3,
         searchLeaseMs: 12000,
         openCooldownMs: 45000,
@@ -51,6 +51,9 @@
         }
         if (Number.isFinite(Number(config.session_greet_limit))) {
             OPTIONS.sessionGreetLimit = Number(config.session_greet_limit);
+        }
+        if (Number.isFinite(Number(config.action_delay_ms))) {
+            OPTIONS.actionDelayMs = Math.max(500, Math.min(5000, Number(config.action_delay_ms)));
         }
         if (config.send_mode === 'image' || config.send_mode === 'text') {
             OPTIONS.sendMode = config.send_mode;
@@ -1580,6 +1583,13 @@
                     return false;
                 }
                 noteBackendOnline();
+                if (res.schedule && res.schedule.enabled && !res.schedule.allowed) {
+                    if (!this.pause) logger.add(res.schedule.message || '当前不在自动运行时段');
+                    releaseSearchLease();
+                    logger.setPaused(true);
+                    this.pause = true;
+                    return false;
+                }
                 if (res.should_stop || res.control === 'stopped') {
                     if (!this.pause) logger.add('CLI 已停止自动化');
                     tools.endGreetSession();

@@ -63,6 +63,10 @@ def blocked_reason(job: dict[str, Any]) -> str:
     if title_keywords and not _matches_any(str(job.get("title", "")), title_keywords):
         return f"职位名称未命中关键词: {job.get('title') or '未知'}"
 
+    required_title_keywords = _normalized_terms(getattr(Config, "job_filter_required_title_keywords", []))
+    if required_title_keywords and not _matches_any(str(job.get("title", "")), required_title_keywords):
+        return f"职位标题未命中硬性关键词: {job.get('title') or '未知'}"
+
     blocked_companies = _normalized_terms(getattr(Config, "job_filter_blocked_companies", []))
     if blocked_companies and _matches_any(str(job.get("company", "")), blocked_companies):
         return f"公司在屏蔽列表中: {job.get('company') or '未知'}"
