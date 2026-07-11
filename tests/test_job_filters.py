@@ -13,7 +13,7 @@ class JobFilterTests(unittest.TestCase):
             **self.saved,
             "job_filter_cities": [],
             "job_filter_title_keywords": [],
-            "job_filter_required_title_keywords": [],
+            "job_filter_target_roles": [],
             "job_filter_blocked_companies": [],
             "job_filter_employment_type": "any",
             "job_filter_salary_min_k": 0,
@@ -63,10 +63,9 @@ class JobFilterTests(unittest.TestCase):
         self.assertEqual(blocked_reason(formal), "")
         self.assertIn("正式", blocked_reason(internship))
 
-    def test_requires_explicit_title_keyword_before_model_scoring(self) -> None:
-        Config.apply({**Config.as_dict(), "job_filter_required_title_keywords": ["Agent开发"]})
-        self.assertEqual(blocked_reason({"title": "Agent开发工程师"}), "")
-        self.assertIn("硬性关键词", blocked_reason({"title": "AI训练师", "detail": "负责模型训练"}))
+    def test_target_role_is_not_a_literal_title_filter(self) -> None:
+        Config.apply({**Config.as_dict(), "job_filter_target_roles": ["Agent开发"]})
+        self.assertEqual(blocked_reason({"title": "AI训练师", "detail": "负责模型训练"}), "")
 
 
 if __name__ == "__main__":

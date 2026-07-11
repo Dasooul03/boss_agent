@@ -31,7 +31,7 @@
         jobInfoResponseTimeout: 90000, // 详情页回传职位信息的最长等待时间
         onlyGreet: true, // 仅辅助打招呼，不自动扫描普通聊天页
         sendMode: 'text', // text=发话术, image=发简历图片
-        sessionGreetLimit: 150,
+        sessionGreetLimit: 100,
         actionDelayMs: 900,
         manualInterventionMaxRetries: 3,
         searchLeaseMs: 12000,

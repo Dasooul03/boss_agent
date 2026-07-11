@@ -199,7 +199,7 @@ def _score_options(*, think: bool, temperature: float = 0.2) -> dict[str, Any]:
     }
 
 
-def calculate_job_score(job_text: str, user_detail: str) -> tuple[dict[str, int] | None, str]:
+def calculate_job_score(job_text: str, user_detail: str, target_roles: list[str] | None = None) -> tuple[dict[str, int] | None, str]:
     """单次岗位评分：模型输出三项分数，系统负责加权。
 
     三级策略重试：
@@ -218,6 +218,16 @@ def calculate_job_score(job_text: str, user_detail: str) -> tuple[dict[str, int]
         },
     ]
     # 令牌无限制：early_stop 会在检测到完整三行/JSON 后主动截断，无需令牌限长
+    if target_roles:
+        messages.append({
+            "role": "user",
+            "content": (
+                "Target role intent: " + " / ".join(target_roles) + "\n"
+                "Apply this as a semantic gate before scoring. A job is not a match merely because it shares AI keywords. "
+                "For example, Agent development is distinct from AI trainer, data annotation, model training, or model operations. "
+                "If the actual job responsibilities are not semantically aligned with the target role, score both skills and project experience between 0 and 20."
+            ),
+        })
     first_think = not bool(getattr(Config, "disable_model_thinking", True))
 
     # ── 第 1 次：使用用户配置的思考设置 ──
@@ -288,7 +298,10 @@ def analyze_job(
         f"# 职位描述\n{_clip_text(job.get('detail', ''), int(Config.job_detail_max_chars))}"
     )
     try:
-        scores, raw_reply = calculate_job_score(job_text, user_detail)
+        target_roles = job.get("target_roles") or []
+        if not isinstance(target_roles, list):
+            target_roles = []
+        scores, raw_reply = calculate_job_score(job_text, user_detail, target_roles)
         if scores is None:
             reply_text = raw_reply.replace("\n", " ").strip()
             if reply_text:
