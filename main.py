@@ -618,16 +618,35 @@ def run_gui() -> int:
     return 0
 
 
+def print_usage() -> None:
+    print(
+        "BossAgent 启动模式:\n"
+        "  python main.py gui      图形化控制台（面向人工操作）\n"
+        "  python main.py cli      CLI 控制台（面向 agent / 终端操作）\n"
+        "  python main.py autorun  使用已有配置自动运行\n"
+        "  python main.py serve    仅启动本地 API"
+    )
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+    mode = sys.argv[1].strip().lower() if len(sys.argv) > 1 else ""
+    if mode in {"-h", "--help", "help", ""}:
+        print_usage()
+        raise SystemExit(0)
+    if mode == "serve":
         raise SystemExit(run_api_only())
-    if len(sys.argv) > 1 and sys.argv[1] == "gui":
+    if mode == "gui":
         raise SystemExit(run_gui())
-    if len(sys.argv) > 1 and sys.argv[1] in {"agent", "mcp"}:
+    if mode in {"agent", "mcp"}:
         print("[BossAgent] 当前版本不再提供 agent/MCP 入口。请使用 start_boss_agent_auto.bat 自动运行，或使用 start_boss_agent.bat 人工配置。")
         raise SystemExit(2)
     from cli_console import run_autorun, run_cli
 
-    if len(sys.argv) > 1 and sys.argv[1] == "autorun":
+    if mode == "autorun":
         raise SystemExit(run_autorun(app, shutdown_callback=shutdown_model_executor))
-    run_cli(app, shutdown_callback=shutdown_model_executor)
+    if mode == "cli":
+        run_cli(app, shutdown_callback=shutdown_model_executor)
+        raise SystemExit(0)
+    print(f"[BossAgent] 未知启动模式: {mode}\n")
+    print_usage()
+    raise SystemExit(2)
