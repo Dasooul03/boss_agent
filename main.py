@@ -604,19 +604,10 @@ def run_api_only() -> int:
 
 
 def run_gui() -> int:
-    """Run the local API and open the human-facing dashboard once it is ready."""
-    try:
-        import uvicorn
-        import webbrowser
-    except ModuleNotFoundError:
-        return run_api_only()
-    Config.load()
-    url = f"http://{Config.server_host}:{Config.server_port}/"
-    threading.Timer(0.8, lambda: webbrowser.open(url, new=2)).start()
-    # A windowless PyInstaller executable has no console stream, so avoid
-    # Uvicorn's colour-aware console logging configuration.
-    uvicorn.run(app, host=Config.server_host, port=int(Config.server_port), log_config=None, access_log=False)
-    return 0
+    """Run the native desktop UI while keeping the local API for Tampermonkey."""
+    from desktop_gui import run_desktop
+
+    return run_desktop(app, shutdown_callback=shutdown_model_executor)
 
 
 def print_usage() -> None:
