@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BossAgent
 // @namespace    http://tampermonkey.net/
-// @version      2026.07.07.1
+// @version      2026.07.13.1
 // @description  BossAgent Tampermonkey userscript for BOSS Zhipin
 // @author       Dasooul
 // @match        https://www.zhipin.com/*
@@ -21,7 +21,7 @@
 
     // 配置项
     const OPTIONS = {
-        scriptVersion: '2026.06-cli-autogreet.23',
+        scriptVersion: '2026.06-cli-autogreet.24',
         greetMaxAttempts: 3,
         greetRetryDelays: [0, 3000, 8000],
         resumeIndex: 0, // 第几份简历，从 0 开始递增
@@ -37,6 +37,9 @@
         searchLeaseMs: 12000,
         openCooldownMs: 45000,
         recentProcessedHours: 24,
+        searchLoadMaxRounds: 15,
+        searchLoadWaitMs: 900,
+        searchLoadMaxStalls: 3,
     };
 
     let backendOfflineNotified = false;
@@ -1970,7 +1973,45 @@
                 }
             };
 
-            // 获取职位链接
+            const findScrollableJobList = (jobList) => {
+                let node = jobList;
+                while (node && node !== document.body && node !== document.documentElement) {
+                    const style = window.getComputedStyle(node);
+                    const overflowY = style && style.overflowY;
+                    if (
+                        (overflowY === 'auto' || overflowY === 'scroll')
+                        && node.scrollHeight > node.clientHeight + 20
+                    ) {
+                        return node;
+                    }
+                    node = node.parentElement;
+                }
+                return document.scrollingElement || document.documentElement;
+            };
+
+            const loadMoreJobs = (jobList) => {
+                let anchors = [];
+                for (const selector of SELECTORS.ZHIPIN.SEARCH.JOBHREFS_CANDIDATES) {
+                    anchors = Array.from(jobList.querySelectorAll(selector));
+                    if (anchors.length) break;
+                }
+                if (!anchors.length) {
+                    anchors = Array.from(document.querySelectorAll('a[href*="/job_detail/"]'));
+                }
+                const lastAnchor = anchors[anchors.length - 1];
+                if (lastAnchor && typeof lastAnchor.scrollIntoView === 'function') {
+                    lastAnchor.scrollIntoView({ block: 'end', behavior: 'auto' });
+                }
+                const scrollTarget = findScrollableJobList(jobList);
+                if (scrollTarget === document.scrollingElement || scrollTarget === document.documentElement) {
+                    window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+                } else {
+                    scrollTarget.scrollTop = scrollTarget.scrollHeight;
+                    scrollTarget.dispatchEvent(new Event('scroll', { bubbles: true }));
+                }
+            };
+
+            // 获取职位链接；首屏都处理过时继续向下加载，避免永远只轮询首屏约 15 个职位。
             const getJobHrefs = async () => {
                 try {
                     setSearchAction('读取职位列表');
@@ -1998,16 +2039,41 @@
                     };
                     let hrefs = collect();
                     let newHrefs = hrefs.filter(href => !seenJobHrefs.has(href) && !backendProcessedHrefs.has(href));
-                    const startedAt = Date.now();
-                    while (!newHrefs.length && hrefs.length <= elsLen && Date.now() - startedAt < 5000) {
-                        await tools.asyncSleep(500);
+                    let previousSignature = hrefs.join('|');
+                    let stalledRounds = 0;
+                    let loadRounds = 0;
+                    if (!newHrefs.length) {
+                        setSearchAction('当前批次已处理，向下加载更多职位');
+                        logger.add('当前可见职位已处理，正在向下加载更多职位');
+                        await api.event('job_list_loading_more', '当前可见职位已处理，正在向下加载更多职位', 'script', 'info', {
+                            knownCount: hrefs.length,
+                            keyword: this.tags[currentTagIdx] || '',
+                        });
+                    }
+                    while (!newHrefs.length && loadRounds < OPTIONS.searchLoadMaxRounds) {
+                        loadRounds += 1;
+                        loadMoreJobs(jobUl);
+                        await tools.asyncSleep(OPTIONS.searchLoadWaitMs);
                         hrefs = collect();
                         newHrefs = hrefs.filter(href => !seenJobHrefs.has(href) && !backendProcessedHrefs.has(href));
+                        const signature = hrefs.join('|');
+                        if (signature === previousSignature) {
+                            stalledRounds += 1;
+                        } else {
+                            stalledRounds = 0;
+                            previousSignature = signature;
+                        }
+                        if (stalledRounds >= OPTIONS.searchLoadMaxStalls) break;
                     }
                     const eventKey = `${hrefs.length}:${newHrefs.length}:${hrefs[hrefs.length - 1] || ''}`;
                     if (eventKey !== lastJobListEventKey) {
                         lastJobListEventKey = eventKey;
-                        await api.event('job_list_found', `发现职位链接 ${hrefs.length} 个，新职位 ${newHrefs.length} 个`, 'script', 'info', { count: hrefs.length, newCount: newHrefs.length });
+                        await api.event('job_list_found', `发现职位链接 ${hrefs.length} 个，新职位 ${newHrefs.length} 个`, 'script', 'info', {
+                            count: hrefs.length,
+                            newCount: newHrefs.length,
+                            loadRounds,
+                            stalledRounds,
+                        });
                     }
                     return [newHrefs, hrefs];
                 } catch (e) {
@@ -2019,7 +2085,7 @@
                 }
             };
 
-            // 读取当前关键词的职位。没有新职位时不滚动，直接切换关键词。
+            // 读取当前关键词的职位。getJobHrefs 会先尝试向下加载，确认没有新职位后才切换关键词。
             const nextPage = async () => {
                 let hrefs;
                 [jobHrefs, hrefs] = await getJobHrefs();
