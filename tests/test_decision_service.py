@@ -14,6 +14,12 @@ class PreflightDecisionTests(unittest.TestCase):
             **self.saved,
             "skip_contacted_companies": True,
             "job_filter_cities": ["上海"],
+            "job_filter_title_keywords": [],
+            "job_filter_target_roles": [],
+            "job_filter_blocked_companies": [],
+            "job_filter_employment_type": "any",
+            "job_filter_salary_min_k": 0,
+            "job_filter_salary_max_k": 0,
             "max_contacts_per_company": 1,
         })
 
